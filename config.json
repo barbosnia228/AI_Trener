@@ -1,0 +1,5 @@
+{
+  "elbow_min_angle": 45,
+  "elbow_max_angle": 75,
+  "repetition_threshold": 160
+}
