@@ -1,27 +1,42 @@
 import sqlite3
+import os
 
-DB_NAME = "trainer_data.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DB_NAME = os.path.join(BASE_DIR, "..", "..", "data", "trainer_data.db")
+DB_NAME = os.path.abspath(DB_NAME)
+
 
 def get_connection():
-    """Создает подключение к базе данных."""
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    # Это чтобы получать данные не списком (1, 2), а словарем {'id': 1, 'reps': 2}
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    """Создает таблицы при первом запуске."""
-    query = '''
-    CREATE TABLE IF NOT EXISTS workouts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT,
-        exercise_name TEXT,
-        reps INTEGER,
-        sets INTEGER,
-        total_errors INTEGER,
-        main_error TEXT
-    )
-    '''
     with get_connection() as conn:
-        conn.execute(query)
-        conn.commit()
+        conn.executescript('''
+
+        CREATE TABLE IF NOT EXISTS workouts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            weight REAL,
+            rating INTEGER,
+            weight_feedback TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workout_id INTEGER,
+            set_number INTEGER,
+            reps INTEGER,
+            FOREIGN KEY (workout_id) REFERENCES workouts(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workout_id INTEGER,
+            error_text TEXT,
+            FOREIGN KEY (workout_id) REFERENCES workouts(id)
+        );
+
+        ''')

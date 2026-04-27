@@ -1,37 +1,37 @@
 from database.repository import WorkoutRepository
 from database.models import WorkoutSession
 
+
 def main():
     repo = WorkoutRepository()
 
-    # 🔹 создаем тренировку
     session = WorkoutSession(
-        exercise_name="Push-ups",
-        reps=15,
-        sets=3,
-        total_errors=2,
-        main_error="Bad form"
+        weight=85.0,
+        rating=9,
+        weight_feedback="good",
+        sets=[12, 10, 8],
+        errors=["Back arch", "Too fast"]
     )
 
-    # 🔹 сохраняем в базу
     repo.save_session(session)
-    print("Тренировка сохранена!\n")
 
-    # 🔹 получаем историю
+    print("Сохранено!\n")
+
     history = repo.get_history()
 
-    print("История тренировок:")
-    for item in history:
+    for w in history:
         print(f"""
-ID: {item.id}
-Дата: {item.date}
-Упражнение: {item.exercise_name}
-Повторения: {item.reps}
-Подходы: {item.sets}
-Ошибки: {item.total_errors}
-Главная ошибка: {item.main_error}
+ID: {w.id}
+Дата: {w.date}
+Вес: {w.weight}
+Оценка: {w.rating}
+Фидбек: {w.weight_feedback}
+
+Подходы: {w.sets}
+Ошибки: {w.errors}
 -------------------------
 """)
+
 
 if __name__ == "__main__":
     main()

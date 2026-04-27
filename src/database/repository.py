@@ -1,52 +1,79 @@
 from .connection import get_connection
 from .models import WorkoutSession
 from datetime import datetime
+from . import connection
 
 
 class WorkoutRepository:
     def __init__(self):
-        # При создании репозитория сразу проверим, есть ли таблицы
-        from . import connection
         connection.init_db()
 
     def save_session(self, session: WorkoutSession):
-        """Сохраняет результат тренировки в базу."""
-        query = '''
-        INSERT INTO workouts (date, exercise_name, reps, sets, total_errors, main_error)
-        VALUES (?, ?, ?, ?, ?, ?)
-        '''
-        date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
-
         with get_connection() as conn:
-            conn.execute(query, (
-                date_str,
-                session.exercise_name,
-                session.reps,
-                session.sets,
-                session.total_errors,
-                session.main_error
+            cursor = conn.cursor()
+
+            # тренировка
+            cursor.execute('''
+                INSERT INTO workouts (date, weight, rating, weight_feedback)
+                VALUES (?, ?, ?, ?)
+            ''', (
+                datetime.now().strftime("%d.%m.%Y %H:%M"),
+                session.weight,
+                session.rating,
+                session.weight_feedback
             ))
+
+            workout_id = cursor.lastrowid
+
+            # подходы
+            for i, reps in enumerate(session.sets, start=1):
+                cursor.execute('''
+                    INSERT INTO sets (workout_id, set_number, reps)
+                    VALUES (?, ?, ?)
+                ''', (workout_id, i, reps))
+
+            # ошибки
+            for error in session.errors:
+                cursor.execute('''
+                    INSERT INTO errors (workout_id, error_text)
+                    VALUES (?, ?)
+                ''', (workout_id, error))
+
             conn.commit()
 
     def get_history(self):
-        """Возвращает все тренировки для страницы статистики."""
-        query = "SELECT * FROM workouts ORDER BY id DESC"
-
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
-            rows = cursor.fetchall()
 
-            # Превращаем строки из базы обратно в объекты WorkoutSession
-            history = []
-            for row in rows:
-                history.append(WorkoutSession(
-                    id=row['id'],
-                    date=row['date'],
-                    exercise_name=row['exercise_name'],
-                    reps=row['reps'],
-                    sets=row['sets'],
-                    total_errors=row['total_errors'],
-                    main_error=row['main_error']
+            workouts = cursor.execute(
+                "SELECT * FROM workouts ORDER BY id DESC"
+            ).fetchall()
+
+            result = []
+
+            for w in workouts:
+                sets_rows = cursor.execute(
+                    "SELECT reps FROM sets WHERE workout_id=? ORDER BY set_number",
+                    (w["id"],)
+                ).fetchall()
+
+                sets = [s["reps"] for s in sets_rows]
+
+                error_rows = cursor.execute(
+                    "SELECT error_text FROM errors WHERE workout_id=?",
+                    (w["id"],)
+                ).fetchall()
+
+                errors = [e["error_text"] for e in error_rows]
+
+                result.append(WorkoutSession(
+                    id=w["id"],
+                    date=w["date"],
+                    weight=w["weight"],
+                    rating=w["rating"],
+                    weight_feedback=w["weight_feedback"],
+                    sets=sets,
+                    errors=errors
                 ))
-            return history
+
+            return result
