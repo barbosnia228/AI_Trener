@@ -12,7 +12,7 @@ class WorkoutRepository:
         with get_connection() as conn:
             cursor = conn.cursor()
 
-            # тренировка
+            # Traning
             cursor.execute('''
                 INSERT INTO workouts (date, weight, rating, weight_feedback)
                 VALUES (?, ?, ?, ?)
@@ -25,14 +25,14 @@ class WorkoutRepository:
 
             workout_id = cursor.lastrowid
 
-            # подходы
+            # Sets
             for i, reps in enumerate(session.sets, start=1):
                 cursor.execute('''
                     INSERT INTO sets (workout_id, set_number, reps)
                     VALUES (?, ?, ?)
                 ''', (workout_id, i, reps))
 
-            # ошибки
+            # Mistakes
             for error in session.errors:
                 cursor.execute('''
                     INSERT INTO errors (workout_id, error_text)
@@ -77,3 +77,22 @@ class WorkoutRepository:
                 ))
 
             return result
+
+    def get_session_by_id(self, workout_id: int) -> WorkoutSession:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            w = cursor.execute("SELECT * FROM workouts WHERE id = ?", (workout_id,)).fetchone()
+            if not w: return None
+
+            sets_rows = cursor.execute("SELECT reps FROM sets WHERE workout_id=? ORDER BY set_number", (w["id"],)).fetchall()
+            error_rows = cursor.execute("SELECT error_text FROM errors WHERE workout_id=?", (w["id"],)).fetchall()
+
+            return WorkoutSession(
+                id=w["id"],
+                date=w["date"],
+                weight=w["weight"],
+                rating=w["rating"],
+                weight_feedback=w["weight_feedback"],
+                sets=[s["reps"] for s in sets_rows],
+                errors=[e["error_text"] for e in error_rows]
+            )
