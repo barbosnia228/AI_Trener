@@ -15,20 +15,30 @@ def main():
 
     repo.save_session(session)
 
-    print("Сохранено!\n")
+    session = WorkoutSession(
+        weight=75.0,
+        rating=10,
+        weight_feedback="good",
+        sets=[10, 10, 10],
+        errors=["Too fast"]
+    )
+
+    repo.save_session(session)
+
+    print("Saved!\n")
 
     history = repo.get_history()
 
     for w in history:
         print(f"""
 ID: {w.id}
-Дата: {w.date}
-Вес: {w.weight}
-Оценка: {w.rating}
-Фидбек: {w.weight_feedback}
+Date: {w.date}
+Weight: {w.weight}
+Rate: {w.rating}
+Weight Feedback: {w.weight_feedback}
 
-Подходы: {w.sets}
-Ошибки: {w.errors}
+Sets: {w.sets}
+Mistakes: {w.errors}
 -------------------------
 """)
 
