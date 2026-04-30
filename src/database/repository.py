@@ -96,3 +96,41 @@ class WorkoutRepository:
                 sets=[s["reps"] for s in sets_rows],
                 errors=[e["error_text"] for e in error_rows]
             )
+
+
+    def get_sessions_by_date(self, date: str):
+    """
+    date формат: 'dd.mm.yyyy'
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        workouts = cursor.execute(
+            "SELECT * FROM workouts WHERE date LIKE ? ORDER BY id DESC",
+            (f"{date}%",)
+        ).fetchall()
+
+        result = []
+
+        for w in workouts:
+            sets_rows = cursor.execute(
+                "SELECT reps FROM sets WHERE workout_id=? ORDER BY set_number",
+                (w["id"],)
+            ).fetchall()
+
+            error_rows = cursor.execute(
+                "SELECT error_text FROM errors WHERE workout_id=?",
+                (w["id"],)
+            ).fetchall()
+
+            result.append(WorkoutSession(
+                id=w["id"],
+                date=w["date"],
+                weight=w["weight"],
+                rating=w["rating"],
+                weight_feedback=w["weight_feedback"],
+                sets=[s["reps"] for s in sets_rows],
+                errors=[e["error_text"] for e in error_rows]
+            ))
+
+        return result
