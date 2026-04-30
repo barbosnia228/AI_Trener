@@ -36,7 +36,7 @@ An intelligent workout assistant that uses Computer Vision to analyze **Incline 
 ## 👥 Authors
 *   **qvxrdxse** — Project Integration, Database Architecture & Core System Logic.
 *   **ipit1y** — AI & Computer Vision (Pose Estimation & Tracking).
-*   **artemooooooooon** — AI & Computer Vision (Movement Analysis & Logic).
+*   **artemooooooooon** — GUI (PyQt6) & UX Design
 
 ---
 *Developed as a laboratory project focusing on Intelligent Systems and Computer Vision.*
