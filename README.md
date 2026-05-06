@@ -24,7 +24,7 @@ An intelligent workout assistant that uses Computer Vision to analyze **Incline 
 *   `main.py` — The entry point of the application.
 
 ## 🚀 Installation & Setup
-*later*
+python -m src.gui.window
 
 ## 📊 How It Works
 1.  **Main Menu:** Choose between **"Exercises"** to start a workout or **"Statistics"** to view past performance.
