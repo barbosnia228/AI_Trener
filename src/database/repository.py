@@ -9,32 +9,45 @@ class WorkoutRepository:
     def __init__(self):
         init_db()
 
-    def save_session(self, session: WorkoutSession):
-        """Saves a workout session and all associated sets to the database"""
+    def save_session(self, session_json: str):
+        """Saves workout session from JSON"""
+    
+        session = json.loads(session_json)
+    
         with get_connection() as conn:
             cursor = conn.cursor()
-
+    
             cursor.execute('''
                 INSERT INTO workouts (date, rating, weight_feedback)
                 VALUES (?, ?, ?)
             ''', (
-                session.date if session.date else datetime.now().strftime("%d.%m.%Y %H:%M"),
-                session.rating,
-                session.weight_feedback
+                session.get("date", datetime.now().strftime("%d.%m.%Y %H:%M")),
+                session.get("rating", 0),
+                session.get("feedback", "normal")
             ))
+    
             workout_id = cursor.lastrowid
-
-            for i, s in enumerate(session.sets, start=1):
-                reps = s.reps if hasattr(s, 'reps') else s['reps']
-                w_val = s.weight if hasattr(s, 'weight') else s['weight']
+    
+            for i, s in enumerate(session.get("sets", []), start=1):
                 cursor.execute('''
                     INSERT INTO sets (workout_id, set_number, reps, weight)
                     VALUES (?, ?, ?, ?)
-                ''', (workout_id, i, reps, w_val))
-
-            for error in session.errors:
-                cursor.execute('INSERT INTO errors (workout_id, error_text) VALUES (?, ?)',
-                               (workout_id, error))
+                ''', (
+                    workout_id,
+                    i,
+                    s["reps"],
+                    s["weight"]
+                ))
+    
+            for error in session.get("errors", []):
+                cursor.execute('''
+                    INSERT INTO errors (workout_id, error_text)
+                    VALUES (?, ?)
+                ''', (
+                    workout_id,
+                    error
+                ))
+    
             conn.commit()
 
     def get_full_analytics_json(self) -> str:
