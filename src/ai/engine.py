@@ -39,8 +39,8 @@ _REP_COOLDOWN_FRAMES = 20
 _VISIBILITY_MIN = 0.35
 
 # ── Body validation ────────────────────────────────────────────────────────────
-_BACK_LEVEL_TOLERANCE    = 0.06
-_HIP_STABILITY_TOLERANCE = 0.06
+_BACK_LEVEL_TOLERANCE    = 0.15  # side-view: one shoulder always further
+_HIP_STABILITY_TOLERANCE = 0.15  # side-view: hips also appear uneven
 
 # ── Landmark indices ───────────────────────────────────────────────────────────
 _L_SHOULDER, _R_SHOULDER = 11, 12
@@ -71,9 +71,9 @@ _FEEDBACK_INTERVAL = 3.0
 
 def download_model() -> None:
     if not os.path.exists(_MODEL_PATH):
-        print(f"[AIEngine] Pobieranie modelu -> {_MODEL_PATH} ...")
+        print(f"[AIEngine] Downloading model -> {_MODEL_PATH} ...")
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
-        print("[AIEngine] Model pobrany.")
+        print("[AIEngine] Model downloaded.")
 
 
 class AIEngine(QObject):
@@ -140,7 +140,7 @@ class AIEngine(QObject):
         self._last_feedback_time = 0.0
         self._errors_this_set    = []
         self._form_scores        = []
-        msg = f"Seria {index + 1} rozpoczeta!"
+        msg = f"Set {index + 1} started!"
         self._feedback.say(msg)
         self.feedback_message.emit(msg, "info")
 
@@ -161,7 +161,7 @@ class AIEngine(QObject):
             "duration":  int(time.time() - self._set_start_time),
         }
         self.set_summary.emit(summary)
-        msg = f"Seria {index + 1} zakonczona. {self._reps} powtorzen."
+        msg = f"Set {index + 1} finished. {self._reps} reps."
         self._feedback.say(msg)
         self.feedback_message.emit(msg, "info")
 
@@ -277,7 +277,7 @@ class AIEngine(QObject):
                 self._rep_down_start     = 0.0
                 self._rep_cooldown       = _REP_COOLDOWN_FRAMES
                 self._reps              += 1
-                msg = f"Powtorzenie {self._reps}"
+                msg = f"Rep {self._reps}"
                 self._feedback.say(msg)
                 self.feedback_message.emit(f"checkmark {msg}", "info")
 
@@ -294,9 +294,9 @@ class AIEngine(QObject):
     def _check_technique(self, lm) -> List[str]:
         errors: List[str] = []
         if abs(lm[_L_SHOULDER].y - lm[_R_SHOULDER].y) > _BACK_LEVEL_TOLERANCE:
-            errors.append("Plecy nie sa plaskie")
+            errors.append("Keep your back straight")
         if abs(lm[_L_HIP].y - lm[_R_HIP].y) > _HIP_STABILITY_TOLERANCE:
-            errors.append("Biodra nie sa stabilne, stopy na podlodze")
+            errors.append("Keep hips stable, feet on the floor")
         return errors
 
     # ── Drawing ───────────────────────────────────────────────────────────────
