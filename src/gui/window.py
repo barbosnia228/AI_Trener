@@ -24,6 +24,7 @@ Quick start (main.py)
 
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
@@ -31,7 +32,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel,
     QScrollArea, QFrame, QSizePolicy,
-    QSpinBox, QDoubleSpinBox,
+    QSpinBox, QDoubleSpinBox, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 import cv2
@@ -568,17 +569,20 @@ class AnalysisWindow(QMainWindow):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class CameraWorker(QThread):
-    frame_signal = pyqtSignal(np.ndarray)
+    frame_signal   = pyqtSignal(np.ndarray)
+    video_finished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.running = False
-        self.cap = None
+        self.running    = False
+        self.cap        = None
+        self.video_path: Optional[str] = None
 
-    def start_capture(self):
-        self.cap = cv2.VideoCapture(0)
+    def start_capture(self, video_path: Optional[str] = None):
+        self.video_path = video_path
+        self.cap = cv2.VideoCapture(video_path if video_path else 0)
         if not self.cap.isOpened():
-            print("Error: Could not open camera.")
+            print(f"Error: Could not open {'video file' if video_path else 'camera'}.")
             return
         self.running = True
         self.start()
@@ -587,13 +591,24 @@ class CameraWorker(QThread):
         self.running = False
         if self.cap:
             self.cap.release()
+            self.cap = None
 
     def run(self):
+        import time
+        is_video = self.video_path is not None
+        delay = (1.0 / (self.cap.get(cv2.CAP_PROP_FPS) or 30.0)) if is_video else 0.0
         while self.running:
             ret, frame = self.cap.read()
             if ret:
                 self.frame_signal.emit(frame)
-            cv2.waitKey(1)
+                if is_video:
+                    time.sleep(delay)
+                else:
+                    cv2.waitKey(1)
+            else:
+                if is_video:
+                    self.video_finished.emit()
+                break
 
 class CameraWindow(QMainWindow):
     """
@@ -618,8 +633,9 @@ class CameraWindow(QMainWindow):
         self.setWindowTitle("📷  AI Trainer — Camera Feed")
         TrainingControlWindow._set_geometry(self, 0.05, 0.52, 0.35, 0.55)
 
-        self._running = False
-        self._frames  = 0
+        self._running    = False
+        self._frames     = 0
+        self._video_path: Optional[str] = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -652,7 +668,16 @@ class CameraWindow(QMainWindow):
         self._fps_lbl.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 10px;")
         bar.addWidget(self._fps_lbl)
 
+        self._source_lbl = QLabel("Source: Camera")
+        self._source_lbl.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 10px;")
+        bar.addWidget(self._source_lbl)
+
         bar.addStretch()
+
+        self._btn_load = SecondaryButton("📁 Load Video")
+        self._btn_load.setFixedWidth(130)
+        self._btn_load.clicked.connect(self._load_video)
+        bar.addWidget(self._btn_load)
 
         self._btn_toggle = SuccessButton("▶  Start Camera")
         self._btn_toggle.setFixedWidth(150)
@@ -668,6 +693,7 @@ class CameraWindow(QMainWindow):
 
         self.worker = CameraWorker(self)
         self.worker.frame_signal.connect(self.update_frame)
+        self.worker.video_finished.connect(self._on_video_finished)
 
         # thread-safe frame relay
         self._frame_signal.connect(self._render_frame, Qt.ConnectionType.QueuedConnection)
@@ -699,25 +725,72 @@ class CameraWindow(QMainWindow):
             self._btn_toggle.setText("■  Stop Camera")
             self._btn_toggle.setStyleSheet(self._btn_toggle.styleSheet().replace(
                 PALETTE["success"], PALETTE["danger"]).replace("#00a383", "#b52a2a"))
+            self._btn_load.setEnabled(False)
             self.worker.start_capture()
             self.camera_started.emit()
         else:
-            self._status_dot.setText("● Inactive")
-            self._status_dot.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 11px;")
-            self._fps_lbl.setText("FPS: —")
-            self._btn_toggle.setText("▶  Start Camera")
-            # restore green
-            self._btn_toggle.setStyleSheet(f"""
-                QPushButton {{
-                    background: {PALETTE['success']}; color: #000;
-                    border: none; border-radius: 8px; padding: 8px 20px;
-                    font-weight: bold; font-size: 11px;
-                }}
-                QPushButton:hover {{ background: #00a383; }}
-            """)
+            self._video_path = None
+            self._do_stop_ui()
             self.worker.stop_capture()
-            self._show_placeholder()
             self.camera_stopped.emit()
+
+    def _load_video(self) -> None:
+        if self._running:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Video File", "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv);;All Files (*)"
+        )
+        if not path:
+            return
+        self._video_path = path
+        self._running = True
+        name = os.path.basename(path)
+        display = (name[:22] + "...") if len(name) > 25 else name
+        self._status_dot.setText("● Playing")
+        self._status_dot.setStyleSheet(f"color: {PALETTE['accent']}; font-size: 11px; font-weight: bold;")
+        self._source_lbl.setText(f"📹 {display}")
+        self._source_lbl.setStyleSheet(f"color: {PALETTE['accent']}; font-size: 10px;")
+        self._btn_toggle.setText("■  Stop Video")
+        self._btn_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background: {PALETTE['danger']}; color: #fff;
+                border: none; border-radius: 8px; padding: 8px 20px;
+                font-weight: bold; font-size: 11px;
+            }}
+            QPushButton:hover {{ background: #b52a2a; }}
+        """)
+        self._btn_load.setEnabled(False)
+        self.worker.start_capture(path)
+        self.camera_started.emit()
+
+    @pyqtSlot()
+    def _on_video_finished(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        self._video_path = None
+        self._do_stop_ui()
+        self.worker.stop_capture()
+        self.camera_stopped.emit()
+
+    def _do_stop_ui(self) -> None:
+        self._status_dot.setText("● Inactive")
+        self._status_dot.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 11px;")
+        self._fps_lbl.setText("FPS: —")
+        self._source_lbl.setText("Source: Camera")
+        self._source_lbl.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 10px;")
+        self._btn_toggle.setText("▶  Start Camera")
+        self._btn_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background: {PALETTE['success']}; color: #000;
+                border: none; border-radius: 8px; padding: 8px 20px;
+                font-weight: bold; font-size: 11px;
+            }}
+            QPushButton:hover {{ background: #00a383; }}
+        """)
+        self._btn_load.setEnabled(True)
+        self._show_placeholder()
 
     @pyqtSlot(np.ndarray)
     def _render_frame(self, bgr: np.ndarray) -> None:
@@ -739,8 +812,8 @@ class CameraWindow(QMainWindow):
     def _show_placeholder(self) -> None:
         self._video.setText(
             f'<span style="color:{PALETTE["muted"]}; font-size:13px;">'
-            "📷  No camera feed<br>"
-            f'<span style="font-size:10px;">Press "Start Camera" to begin</span>'
+            "📷  No feed<br>"
+            f'<span style="font-size:10px;">Press "Start Camera" for live feed or "Load Video" to analyse a file</span>'
             "</span>"
         )
         self._video.setTextFormat(Qt.TextFormat.RichText)
