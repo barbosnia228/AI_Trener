@@ -336,7 +336,169 @@ class TrainingControlWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
+        # ── Tab 2: Statistics ────────────────────────────────────────────────
+        from src.database.repository import WorkoutRepository
+        self._repo = WorkoutRepository()
+
+        stats_tab = QWidget()
+        sr = QVBoxLayout(stats_tab)
+        sr.setContentsMargins(20, 16, 20, 16)
+        sr.setSpacing(10)
+        self._tabs.addTab(stats_tab, "📊  Statistics")
+
+        sr.addWidget(_label("Overall", size=10, muted=True))
+        sc_row = QHBoxLayout()
+        sc_row.setSpacing(8)
+        self._sv_workouts = self._stat_card(sc_row, "Workouts",    "—")
+        self._sv_reps     = self._stat_card(sc_row, "Total Reps",  "—")
+        self._sv_max      = self._stat_card(sc_row, "Best Weight", "—")
+        sr.addLayout(sc_row)
+
+        sr.addWidget(_separator())
+        sr.addWidget(_label("Progress", size=10, muted=True))
+        self._stat_figure = Figure(figsize=(6, 2.6), facecolor=PALETTE["panel"])
+        self._stat_canvas = FigureCanvasQTAgg(self._stat_figure)
+        self._stat_canvas.setMinimumHeight(170)
+        sr.addWidget(self._stat_canvas)
+
+        sr.addWidget(_separator())
+        sr.addWidget(_label("History", size=10, muted=True))
+        hist_scroll = QScrollArea()
+        hist_scroll.setWidgetResizable(True)
+        hist_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        hist_scroll.setStyleSheet(
+            f"QScrollArea {{ border: 1px solid {PALETTE['border']}; border-radius: 8px; }}"
+        )
+        self._hist_widget = QWidget()
+        self._hist_widget.setStyleSheet(f"background: {PALETTE['panel']};")
+        self._hist_layout = QVBoxLayout(self._hist_widget)
+        self._hist_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._hist_layout.setContentsMargins(8, 8, 8, 8)
+        self._hist_layout.setSpacing(6)
+        hist_scroll.setWidget(self._hist_widget)
+        sr.addWidget(hist_scroll, 1)
+
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+
     # ── private ────────────────────────────────────────────────────────────────
+
+    def _stat_card(self, layout, label: str, value: str) -> QLabel:
+        v = QLabel(value)
+        set_font(v, 18, bold=True)
+        v.setStyleSheet(f"color: {PALETTE['text']};")
+        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        k = _label(label, size=8, muted=True)
+        k.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {PALETTE['card']};
+                border: 1px solid {PALETTE['border']};
+                border-radius: 8px;
+            }}
+        """)
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(8, 8, 8, 8)
+        inner.addWidget(v)
+        inner.addWidget(k)
+        layout.addWidget(card)
+        return v
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 1:
+            self._refresh_stats()
+
+    def _refresh_stats(self) -> None:
+        try:
+            data = json.loads(self._repo.get_full_analytics_json())
+        except Exception:
+            return
+        overall = data.get("overall", {})
+        self._sv_workouts.setText(str(overall.get("total_workouts", 0)))
+        self._sv_reps.setText(str(overall.get("total_reps", 0)))
+        self._sv_max.setText(f"{overall.get('all_time_max', 0):.1f} kg")
+        self._update_stat_charts(data.get("charts", {}))
+        self._update_stat_history(data.get("history", []))
+
+    def _update_stat_charts(self, charts: dict) -> None:
+        labels      = charts.get("labels", [])
+        volumes     = charts.get("volumes", [])
+        max_weights = charts.get("max_weights", [])
+        self._stat_figure.clear()
+        self._stat_figure.patch.set_facecolor(PALETTE["panel"])
+        if not labels:
+            self._stat_canvas.draw()
+            return
+        ax1 = self._stat_figure.add_subplot(1, 2, 1)
+        ax2 = self._stat_figure.add_subplot(1, 2, 2)
+        for ax in (ax1, ax2):
+            ax.set_facecolor(PALETTE["card"])
+            for spine in ax.spines.values():
+                spine.set_edgecolor(PALETTE["border"])
+            ax.tick_params(colors=PALETTE["muted"], labelsize=7)
+        xs = list(range(len(labels)))
+        ax1.bar(xs, volumes, color=PALETTE["accent"], alpha=0.85)
+        ax1.set_title("Volume (kg·reps)", color=PALETTE["text"], fontsize=8, pad=4)
+        ax1.set_xticks(xs)
+        ax1.set_xticklabels(labels, rotation=45, ha="right", fontsize=6, color=PALETTE["muted"])
+        ax1.grid(axis="y", color=PALETTE["border"], linestyle="--", alpha=0.5)
+        ax2.plot(xs, max_weights, color=PALETTE["success"], marker="o", linewidth=2, markersize=4)
+        ax2.fill_between(xs, max_weights, alpha=0.15, color=PALETTE["success"])
+        ax2.set_title("Max Weight (kg)", color=PALETTE["text"], fontsize=8, pad=4)
+        ax2.set_xticks(xs)
+        ax2.set_xticklabels(labels, rotation=45, ha="right", fontsize=6, color=PALETTE["muted"])
+        ax2.grid(axis="y", color=PALETTE["border"], linestyle="--", alpha=0.5)
+        self._stat_figure.tight_layout(pad=0.8)
+        self._stat_canvas.draw()
+
+    def _update_stat_history(self, history: list) -> None:
+        while self._hist_layout.count():
+            item = self._hist_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not history:
+            lbl = _label("No workouts recorded yet.", size=9, muted=True)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._hist_layout.addWidget(lbl)
+            return
+        for w in history:
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {PALETTE['card']};
+                    border: 1px solid {PALETTE['border']};
+                    border-radius: 8px;
+                }}
+            """)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 10)
+            cl.setSpacing(3)
+            top = QHBoxLayout()
+            top.addWidget(_label(w.get("date", "—"), size=10, bold=True))
+            top.addStretch()
+            top.addWidget(_label(f"⭐ {w.get('rating', 0)}/10", size=9))
+            cl.addLayout(top)
+            s = w.get("summary", {})
+            cl.addWidget(_label(
+                f"Vol: {s.get('volume', 0):.0f} kg·reps  ·  "
+                f"Max: {s.get('max_weight', 0):.1f} kg  ·  "
+                f"Reps: {s.get('reps_count', 0)}",
+                size=8, muted=True,
+            ))
+            sets = w.get("sets", [])
+            if sets:
+                sets_str = "  ".join(
+                    f"S{i+1}: {st['weight']:.0f}kg×{st['reps']}"
+                    for i, st in enumerate(sets)
+                )
+                cl.addWidget(_label(sets_str, size=8, muted=True))
+            errors = [e for e in w.get("errors", []) if e and e.lower() != "none"]
+            if errors:
+                err = _label(f"Errors: {', '.join(errors)}", size=8)
+                err.setStyleSheet(f"color: {PALETTE['danger']}; background: transparent;")
+                err.setWordWrap(True)
+                cl.addWidget(err)
+            self._hist_layout.addWidget(card)
 
     def _start(self):
         n = self._spin_sets.value()
