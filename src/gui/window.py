@@ -27,20 +27,22 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
+import cv2
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel,
     QScrollArea, QFrame, QSizePolicy,
     QSpinBox, QDoubleSpinBox, QFileDialog, QTabWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-import cv2
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap, QFont, QScreen
+
+from src.database.repository import WorkoutRepository
 
 from src.gui.components import (
     PrimaryButton, SuccessButton, DangerButton, SecondaryButton,
@@ -97,7 +99,6 @@ class _SetRow(QFrame):
 
     def __init__(self, index: int, reps: int, weight: float, on_start, on_finish, on_skip, parent=None):
         super().__init__(parent)
-        self._done = False
         self._reps = reps
         self._weight = weight
         self.setStyleSheet(f"""
@@ -337,7 +338,6 @@ class TrainingControlWindow(QMainWindow):
         self._timer.timeout.connect(self._tick)
 
         # ── Tab 2: Statistics ────────────────────────────────────────────────
-        from src.database.repository import WorkoutRepository
         self._repo = WorkoutRepository()
 
         stats_tab = QWidget()
@@ -780,7 +780,6 @@ class CameraWorker(QThread):
             self.cap = None
 
     def run(self):
-        import time
         is_video = self.video_path is not None
         delay = (1.0 / (self.cap.get(cv2.CAP_PROP_FPS) or 30.0)) if is_video else 0.0
         while self.running:
