@@ -113,6 +113,25 @@ def _metric_card(layout: QHBoxLayout, label: str, value: str) -> QLabel:
     return v
 
 
+_BTN_STOP_STYLE = f"""
+    QPushButton {{
+        background: {PALETTE['danger']}; color: #fff;
+        border: none; border-radius: 8px; padding: 8px 20px;
+        font-weight: bold; font-size: 11px;
+    }}
+    QPushButton:hover {{ background: #b52a2a; }}
+"""
+
+_BTN_START_STYLE = f"""
+    QPushButton {{
+        background: {PALETTE['success']}; color: #000;
+        border: none; border-radius: 8px; padding: 8px 20px;
+        font-weight: bold; font-size: 11px;
+    }}
+    QPushButton:hover {{ background: #00a383; }}
+"""
+
+
 def _apply_geometry(win: QMainWindow, lf: float, tf: float, wf: float, hf: float) -> None:
     screen = QApplication.primaryScreen().geometry()
     sw, sh = screen.width(), screen.height()
@@ -193,6 +212,14 @@ class _SetRow(QFrame):
         self._info.setText(f"{self._reps} reps · {self._spin_weight.value():.1f} kg")
 
 
+
+    @property
+    def is_done(self) -> bool:
+        return self._status.text() in ("Done ✓", "Skipped")
+
+    @property
+    def is_completed(self) -> bool:
+        return self._status.text() == "Done ✓"
 
     def mark_active(self):
         self._status.setText("Active")
@@ -555,14 +582,12 @@ class TrainingControlWindow(QMainWindow):
         self._check_all_done()
 
     def _check_all_done(self):
-        if self._rows and all(
-            row._status.text() in ("Done ✓", "Skipped") for row in self._rows
-        ):
+        if self._rows and all(row.is_done for row in self._rows):
             self._status_lbl.setText("🎉 All sets complete!")
             self._stop()
 
     def _update_sets_label(self):
-        done  = sum(1 for r in self._rows if r._status.text() == "Done ✓")
+        done  = sum(1 for r in self._rows if r.is_completed)
         total = len(self._rows)
         self._lbl_sets.setText(f"Sets: {done} / {total}")
 
@@ -877,8 +902,7 @@ class CameraWindow(QMainWindow):
             self._status_dot.setText("● Active")
             self._status_dot.setStyleSheet(f"color: {PALETTE['success']}; font-size: 11px; font-weight: bold;")
             self._btn_toggle.setText("■  Stop Camera")
-            self._btn_toggle.setStyleSheet(self._btn_toggle.styleSheet().replace(
-                PALETTE["success"], PALETTE["danger"]).replace("#00a383", "#b52a2a"))
+            self._btn_toggle.setStyleSheet(_BTN_STOP_STYLE)
             self._btn_load.setEnabled(False)
             self.worker.start_capture()
             self.camera_started.emit()
@@ -906,14 +930,7 @@ class CameraWindow(QMainWindow):
         self._source_lbl.setText(f"📹 {display}")
         self._source_lbl.setStyleSheet(f"color: {PALETTE['accent']}; font-size: 10px;")
         self._btn_toggle.setText("■  Stop Video")
-        self._btn_toggle.setStyleSheet(f"""
-            QPushButton {{
-                background: {PALETTE['danger']}; color: #fff;
-                border: none; border-radius: 8px; padding: 8px 20px;
-                font-weight: bold; font-size: 11px;
-            }}
-            QPushButton:hover {{ background: #b52a2a; }}
-        """)
+        self._btn_toggle.setStyleSheet(_BTN_STOP_STYLE)
         self._btn_load.setEnabled(False)
         self.worker.start_capture(path)
         self.camera_started.emit()
@@ -935,14 +952,7 @@ class CameraWindow(QMainWindow):
         self._source_lbl.setText("Source: Camera")
         self._source_lbl.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 10px;")
         self._btn_toggle.setText("▶  Start Camera")
-        self._btn_toggle.setStyleSheet(f"""
-            QPushButton {{
-                background: {PALETTE['success']}; color: #000;
-                border: none; border-radius: 8px; padding: 8px 20px;
-                font-weight: bold; font-size: 11px;
-            }}
-            QPushButton:hover {{ background: #00a383; }}
-        """)
+        self._btn_toggle.setStyleSheet(_BTN_START_STYLE)
         self._btn_load.setEnabled(True)
         self._show_placeholder()
 
