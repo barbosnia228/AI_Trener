@@ -27,20 +27,22 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
+import cv2
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel,
     QScrollArea, QFrame, QSizePolicy,
     QSpinBox, QDoubleSpinBox, QFileDialog, QTabWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-import cv2
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap, QFont, QScreen
+
+from src.database.repository import WorkoutRepository
 
 from src.gui.components import (
     PrimaryButton, SuccessButton, DangerButton, SecondaryButton,
@@ -88,6 +90,69 @@ def _label(text: str, size: int = 10, muted: bool = False, bold: bool = False) -
     return lbl
 
 
+def _metric_card(layout: QHBoxLayout, label: str, value: str) -> QLabel:
+    v = QLabel(value)
+    set_font(v, 18, bold=True)
+    v.setStyleSheet(f"color: {PALETTE['text']};")
+    v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    k = _label(label, size=8, muted=True)
+    k.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    card = QFrame()
+    card.setStyleSheet(f"""
+        QFrame {{
+            background: {PALETTE['card']};
+            border: 1px solid {PALETTE['border']};
+            border-radius: 8px;
+        }}
+    """)
+    inner = QVBoxLayout(card)
+    inner.setContentsMargins(8, 8, 8, 8)
+    inner.addWidget(v)
+    inner.addWidget(k)
+    layout.addWidget(card)
+    return v
+
+
+_BTN_STOP_STYLE = f"""
+    QPushButton {{
+        background: {PALETTE['danger']}; color: #fff;
+        border: none; border-radius: 8px; padding: 8px 20px;
+        font-weight: bold; font-size: 11px;
+    }}
+    QPushButton:hover {{ background: #b52a2a; }}
+"""
+
+_BTN_START_STYLE = f"""
+    QPushButton {{
+        background: {PALETTE['success']}; color: #000;
+        border: none; border-radius: 8px; padding: 8px 20px;
+        font-weight: bold; font-size: 11px;
+    }}
+    QPushButton:hover {{ background: #00a383; }}
+"""
+
+
+def _apply_geometry(win: QMainWindow, lf: float, tf: float, wf: float, hf: float) -> None:
+    screen = QApplication.primaryScreen().geometry()
+    sw, sh = screen.width(), screen.height()
+    x = max(0, min(int(sw * lf), sw - 100))
+    y = max(0, min(int(sh * tf), sh - 100))
+    w = min(int(sw * wf), sw - x - 20)
+    h = min(int(sh * hf), sh - y - 20)
+    if sw < 1200:
+        title = win.windowTitle()
+        if "Control" in title:
+            win.setGeometry(x, y, w, int(0.3 * sh))
+        elif "Analysis" in title:
+            win.setGeometry(x, int(0.35 * sh), w, int(0.25 * sh))
+        elif "Camera" in title:
+            win.setGeometry(x, int(0.62 * sh), w, int(0.35 * sh))
+        else:
+            win.setGeometry(x, y, w, h)
+    else:
+        win.setGeometry(x, y, w, h)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Window 1 — Training Control
 # ══════════════════════════════════════════════════════════════════════════════
@@ -97,7 +162,6 @@ class _SetRow(QFrame):
 
     def __init__(self, index: int, reps: int, weight: float, on_start, on_finish, on_skip, parent=None):
         super().__init__(parent)
-        self._done = False
         self._reps = reps
         self._weight = weight
         self.setStyleSheet(f"""
@@ -149,6 +213,14 @@ class _SetRow(QFrame):
 
 
 
+    @property
+    def is_done(self) -> bool:
+        return self._status.text() in ("Done ✓", "Skipped")
+
+    @property
+    def is_completed(self) -> bool:
+        return self._status.text() == "Done ✓"
+
     def mark_active(self):
         self._status.setText("Active")
         self._status.setStyleSheet(f"color: {PALETTE['warning'] if 'warning' in PALETTE else '#fdcb6e'};")
@@ -171,31 +243,6 @@ class _SetRow(QFrame):
         """)
 
 class TrainingControlWindow(QMainWindow):
-    def _set_geometry(self, left_frac: float, top_frac: float, width_frac: float, height_frac: float) -> None:
-        """Set window geometry as fractions of primary screen."""
-        screen = QApplication.primaryScreen().geometry()
-        screen_w, screen_h = screen.width(), screen.height()
-        x = int(screen_w * left_frac)
-        y = int(screen_h * top_frac)
-        w = int(screen_w * width_frac)
-        h = int(screen_h * height_frac)
-        # Clamp to screen bounds
-        x = max(0, min(x, screen_w - 100))
-        y = max(0, min(y, screen_h - 100))
-        w = min(w, screen_w - x - 20)
-        h = min(h, screen_h - y - 20)
-        # Small screen stack vertically
-        if screen_w < 1200:
-            if self.windowTitle() == "🏋️  AI Trainer — Control":
-                self.setGeometry(x, y, w, int(0.3 * screen_h))
-            elif self.windowTitle() == "⚡  AI Trainer — Live Analysis":
-                self.setGeometry(x, int(0.35 * screen_h), w, int(0.25 * screen_h))
-            elif self.windowTitle() == "📷  AI Trainer — Camera Feed":
-                self.setGeometry(x, int(0.62 * screen_h), w, int(0.35 * screen_h))
-            else:
-                self.setGeometry(x, y, w, h)
-        else:
-            self.setGeometry(x, y, w, h)
     """
     Signals
     -------
@@ -204,7 +251,6 @@ class TrainingControlWindow(QMainWindow):
     set_started(index: int)
     set_finished(index: int)
     set_skipped(index: int)
-    history_requested()
     stats_requested()
     """
 
@@ -218,7 +264,7 @@ class TrainingControlWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("🏋️  AI Trainer — Control")
-        self._set_geometry(0.05, 0.05, 0.40, 0.50)
+        _apply_geometry(self, 0.05, 0.05, 0.40, 0.50)
         self.setMinimumHeight(620)
 
         self._rows: list[_SetRow] = []
@@ -337,7 +383,6 @@ class TrainingControlWindow(QMainWindow):
         self._timer.timeout.connect(self._tick)
 
         # ── Tab 2: Statistics ────────────────────────────────────────────────
-        from src.database.repository import WorkoutRepository
         self._repo = WorkoutRepository()
 
         stats_tab = QWidget()
@@ -349,9 +394,9 @@ class TrainingControlWindow(QMainWindow):
         sr.addWidget(_label("Overall", size=10, muted=True))
         sc_row = QHBoxLayout()
         sc_row.setSpacing(8)
-        self._sv_workouts = self._stat_card(sc_row, "Workouts",    "—")
-        self._sv_reps     = self._stat_card(sc_row, "Total Reps",  "—")
-        self._sv_max      = self._stat_card(sc_row, "Best Weight", "—")
+        self._sv_workouts = _metric_card(sc_row, "Workouts",    "—")
+        self._sv_reps     = _metric_card(sc_row, "Total Reps",  "—")
+        self._sv_max      = _metric_card(sc_row, "Best Weight", "—")
         sr.addLayout(sc_row)
 
         sr.addWidget(_separator())
@@ -381,28 +426,6 @@ class TrainingControlWindow(QMainWindow):
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
     # ── private ────────────────────────────────────────────────────────────────
-
-    def _stat_card(self, layout, label: str, value: str) -> QLabel:
-        v = QLabel(value)
-        set_font(v, 18, bold=True)
-        v.setStyleSheet(f"color: {PALETTE['text']};")
-        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        k = _label(label, size=8, muted=True)
-        k.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background: {PALETTE['card']};
-                border: 1px solid {PALETTE['border']};
-                border-radius: 8px;
-            }}
-        """)
-        inner = QVBoxLayout(card)
-        inner.setContentsMargins(8, 8, 8, 8)
-        inner.addWidget(v)
-        inner.addWidget(k)
-        layout.addWidget(card)
-        return v
 
     def _on_tab_changed(self, index: int) -> None:
         if index == 1:
@@ -559,14 +582,12 @@ class TrainingControlWindow(QMainWindow):
         self._check_all_done()
 
     def _check_all_done(self):
-        if self._rows and all(
-            row._status.text() in ("Done ✓", "Skipped") for row in self._rows
-        ):
+        if self._rows and all(row.is_done for row in self._rows):
             self._status_lbl.setText("🎉 All sets complete!")
             self._stop()
 
     def _update_sets_label(self):
-        done  = sum(1 for r in self._rows if r._status.text() == "Done ✓")
+        done  = sum(1 for r in self._rows if r.is_completed)
         total = len(self._rows)
         self._lbl_sets.setText(f"Sets: {done} / {total}")
 
@@ -591,7 +612,7 @@ class AnalysisWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("⚡  AI Trainer — Live Analysis")
-        TrainingControlWindow._set_geometry(self, 0.48, 0.05, 0.25, 0.45)
+        _apply_geometry(self, 0.48, 0.05, 0.25, 0.45)
         self.setMinimumHeight(540)
 
         self._session_reps   = 0
@@ -617,10 +638,10 @@ class AnalysisWindow(QMainWindow):
         root.addWidget(_label("Current Set", size=10, muted=True))
         set_grid = QHBoxLayout()
         set_grid.setSpacing(8)
-        self._v_reps  = self._metric_col(set_grid, "Reps",       "0")
-        self._v_angle = self._metric_col(set_grid, "Angle",      "—°")
-        self._v_form  = self._metric_col(set_grid, "Form",       "—%")
-        self._v_time  = self._metric_col(set_grid, "Set Time",   "00:00")
+        self._v_reps  = _metric_card(set_grid, "Reps",       "0")
+        self._v_angle = _metric_card(set_grid, "Angle",      "—°")
+        self._v_form  = _metric_card(set_grid, "Form",       "—%")
+        self._v_time  = _metric_card(set_grid, "Set Time",   "00:00")
         root.addLayout(set_grid)
 
         root.addWidget(_separator())
@@ -629,9 +650,9 @@ class AnalysisWindow(QMainWindow):
         root.addWidget(_label("Session Totals", size=10, muted=True))
         sess_grid = QHBoxLayout()
         sess_grid.setSpacing(8)
-        self._s_reps   = self._metric_col(sess_grid, "Total Reps", "0")
-        self._s_sets   = self._metric_col(sess_grid, "Sets Done",  "0")
-        self._s_errors = self._metric_col(sess_grid, "Errors",     "0")
+        self._s_reps   = _metric_card(sess_grid, "Total Reps", "0")
+        self._s_sets   = _metric_card(sess_grid, "Sets Done",  "0")
+        self._s_errors = _metric_card(sess_grid, "Errors",     "0")
         root.addLayout(sess_grid)
 
         root.addWidget(_separator())
@@ -653,33 +674,6 @@ class AnalysisWindow(QMainWindow):
         root.addWidget(scroll, 1)
 
         self._log_entries = []
-
-    # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _metric_col(self, layout, label: str, value: str) -> QLabel:
-        """Add a value+label column to a layout, return the value label."""
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        v = QLabel(value)
-        set_font(v, 18, bold=True)
-        v.setStyleSheet(f"color: {PALETTE['text']};")
-        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        k = _label(label, size=8, muted=True)
-        k.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background: {PALETTE['card']};
-                border: 1px solid {PALETTE['border']};
-                border-radius: 8px;
-            }}
-        """)
-        inner = QVBoxLayout(card)
-        inner.setContentsMargins(8, 8, 8, 8)
-        inner.addWidget(v)
-        inner.addWidget(k)
-        layout.addWidget(card)
-        return v
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -780,7 +774,6 @@ class CameraWorker(QThread):
             self.cap = None
 
     def run(self):
-        import time
         is_video = self.video_path is not None
         delay = (1.0 / (self.cap.get(cv2.CAP_PROP_FPS) or 30.0)) if is_video else 0.0
         while self.running:
@@ -817,7 +810,7 @@ class CameraWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("📷  AI Trainer — Camera Feed")
-        TrainingControlWindow._set_geometry(self, 0.05, 0.52, 0.35, 0.55)
+        _apply_geometry(self, 0.05, 0.52, 0.35, 0.55)
 
         self._running    = False
         self._frames     = 0
@@ -909,8 +902,7 @@ class CameraWindow(QMainWindow):
             self._status_dot.setText("● Active")
             self._status_dot.setStyleSheet(f"color: {PALETTE['success']}; font-size: 11px; font-weight: bold;")
             self._btn_toggle.setText("■  Stop Camera")
-            self._btn_toggle.setStyleSheet(self._btn_toggle.styleSheet().replace(
-                PALETTE["success"], PALETTE["danger"]).replace("#00a383", "#b52a2a"))
+            self._btn_toggle.setStyleSheet(_BTN_STOP_STYLE)
             self._btn_load.setEnabled(False)
             self.worker.start_capture()
             self.camera_started.emit()
@@ -938,14 +930,7 @@ class CameraWindow(QMainWindow):
         self._source_lbl.setText(f"📹 {display}")
         self._source_lbl.setStyleSheet(f"color: {PALETTE['accent']}; font-size: 10px;")
         self._btn_toggle.setText("■  Stop Video")
-        self._btn_toggle.setStyleSheet(f"""
-            QPushButton {{
-                background: {PALETTE['danger']}; color: #fff;
-                border: none; border-radius: 8px; padding: 8px 20px;
-                font-weight: bold; font-size: 11px;
-            }}
-            QPushButton:hover {{ background: #b52a2a; }}
-        """)
+        self._btn_toggle.setStyleSheet(_BTN_STOP_STYLE)
         self._btn_load.setEnabled(False)
         self.worker.start_capture(path)
         self.camera_started.emit()
@@ -967,14 +952,7 @@ class CameraWindow(QMainWindow):
         self._source_lbl.setText("Source: Camera")
         self._source_lbl.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 10px;")
         self._btn_toggle.setText("▶  Start Camera")
-        self._btn_toggle.setStyleSheet(f"""
-            QPushButton {{
-                background: {PALETTE['success']}; color: #000;
-                border: none; border-radius: 8px; padding: 8px 20px;
-                font-weight: bold; font-size: 11px;
-            }}
-            QPushButton:hover {{ background: #00a383; }}
-        """)
+        self._btn_toggle.setStyleSheet(_BTN_START_STYLE)
         self._btn_load.setEnabled(True)
         self._show_placeholder()
 
