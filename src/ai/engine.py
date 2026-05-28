@@ -4,45 +4,39 @@ import time
 import urllib.request
 from collections import deque
 from typing import List, Optional
-
 import cv2
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
-
 from src.ai.geometry import GeometryEngine
 from src.ai.validator import TechniqueValidator
 from src.ai.feedback import FeedbackEngine
 
-# ── Model ──────────────────────────────────────────────────────────────────────
 _MODEL_PATH = "pose_landmarker.task"
 _MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/"
     "pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 )
 
-# ── Rep counting thresholds ────────────────────────────────────────────────────
-_ANGLE_UP   = 160.0
-_ANGLE_DOWN =  70.0
+_ANGLE_UP   = 125.0
+_ANGLE_DOWN =  85.0
 
-_ANGLE_SMOOTH_FRAMES = 5
+_ANGLE_SMOOTH_FRAMES = 6
 
-_MIN_ANGLE_REACHED   = 55.0
-_MIN_TIME_DOWN_SEC   = 0.35
-_MIN_FRAMES_UP       = 5
-_REP_COOLDOWN_FRAMES = 20
+_MIN_ANGLE_REACHED   =  70.0
+_MIN_TIME_DOWN_SEC   = 0.25
+_MIN_FRAMES_UP       = 4
+_REP_COOLDOWN_FRAMES = 15
+_VISIBILITY_MIN = 0.30
 
-# ── Visibility ─────────────────────────────────────────────────────────────────
-_VISIBILITY_MIN = 0.35
+_ELBOW_SYMMETRY_TOLERANCE = 0.20
+_ELBOW_FLARE_RATIO        = 2.10
+_WRIST_BEND_TOLERANCE     = 0.12
+_FOOT_LIFT_TOLERANCE      = 0.08
+_FOOT_LIFT_FRAMES         = 8
 
-# ── Body validation ────────────────────────────────────────────────────────────
-_BACK_LEVEL_TOLERANCE    = 0.15  # side-view: one shoulder always further
-_HIP_STABILITY_TOLERANCE = 0.15  # side-view: hips also appear uneven
-
-# ── Landmark indices ───────────────────────────────────────────────────────────
 _L_SHOULDER, _R_SHOULDER = 11, 12
 _L_ELBOW,    _R_ELBOW    = 13, 14
 _L_WRIST,    _R_WRIST    = 15, 16
@@ -103,18 +97,18 @@ class AIEngine(QObject):
         self._validator = TechniqueValidator()
         self._feedback  = FeedbackEngine()
 
-        # Smoothing buffer
         self._angle_buffer: deque[float] = deque(maxlen=_ANGLE_SMOOTH_FRAMES)
 
-        # Rep state
         self._rep_state: str            = "up"
         self._reps: int                 = 0
         self._rep_frames_in_up: int     = 0
         self._rep_min_angle_seen: float = 180.0
-        self._rep_down_start: float     = 0.0   # timestamp входу в DOWN
+        self._rep_down_start: float     = 0.0
         self._rep_cooldown: int         = 0
 
-        # Set state
+        self._foot_lift_frames: int = 0
+        self._ankle_baseline: float = None
+
         self._set_active: bool           = False
         self._set_index: int             = 0
         self._set_start_time: float      = 0.0
@@ -123,7 +117,6 @@ class AIEngine(QObject):
         self._form_scores: List[int]     = []
         self._current_angle: float       = 0.0
 
-    # ── Set lifecycle ─────────────────────────────────────────────────────────
 
     @pyqtSlot(int)
     def on_set_started(self, index: int) -> None:
@@ -140,6 +133,8 @@ class AIEngine(QObject):
         self._last_feedback_time = 0.0
         self._errors_this_set    = []
         self._form_scores        = []
+        self._ankle_baseline     = None
+        self._foot_lift_frames   = 0
         msg = f"Set {index + 1} started!"
         self._feedback.say(msg)
         self.feedback_message.emit(msg, "info")
@@ -176,8 +171,6 @@ class AIEngine(QObject):
         self._rep_cooldown       = 0
         self._angle_buffer.clear()
 
-    # ── Main frame processing ─────────────────────────────────────────────────
-
     @pyqtSlot(np.ndarray)
     def process_frame(self, bgr: np.ndarray) -> None:
         rgb      = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -202,11 +195,11 @@ class AIEngine(QObject):
             errors     = self._check_technique(lm)
             form_score = max(0, 100 - len(errors) * 25)
 
+            if raw_angle is not None:
+                self._count_rep(angle)
+
             if self._set_active:
                 self._form_scores.append(form_score)
-                if raw_angle is not None:
-                    self._count_rep(angle)
-
                 if errors:
                     now = time.time()
                     if now - self._last_feedback_time >= _FEEDBACK_INTERVAL:
@@ -224,7 +217,6 @@ class AIEngine(QObject):
         self.processed_frame.emit(frame)
         self.metrics_updated.emit(angle, self._reps, form_score, elapsed)
 
-    # ── Rep counter ───────────────────────────────────────────────────────────
 
     def _lm_vis(self, lm, idx: int) -> float:
         return float(getattr(lm[idx], "visibility", 1.0))
@@ -233,18 +225,19 @@ class AIEngine(QObject):
         angles = []
         for sh, el, wr in [(_L_SHOULDER, _L_ELBOW, _L_WRIST),
                             (_R_SHOULDER, _R_ELBOW, _R_WRIST)]:
-            if (self._lm_vis(lm, sh) >= _VISIBILITY_MIN
-                    and self._lm_vis(lm, el) >= _VISIBILITY_MIN
-                    and self._lm_vis(lm, wr) >= _VISIBILITY_MIN):
-                angles.append(self._geometry.calculate_angle(
+            vis_ok = (self._lm_vis(lm, sh) >= _VISIBILITY_MIN
+                      and self._lm_vis(lm, el) >= _VISIBILITY_MIN
+                      and self._lm_vis(lm, wr) >= _VISIBILITY_MIN)
+            if vis_ok:
+                a = self._geometry.calculate_angle(
                     [lm[sh].x, lm[sh].y],
                     [lm[el].x, lm[el].y],
                     [lm[wr].x, lm[wr].y],
-                ))
+                )
+                angles.append(a)
         return sum(angles) / len(angles) if angles else None
 
     def _count_rep(self, angle: float) -> None:
-        # Cooldown після зарахованого репа
         if self._rep_cooldown > 0:
             self._rep_cooldown -= 1
             return
@@ -252,13 +245,11 @@ class AIEngine(QObject):
         if self._rep_state == "up":
             self._rep_frames_in_up = 0
             if angle < _ANGLE_DOWN:
-
                 self._rep_state          = "down"
                 self._rep_min_angle_seen = angle
                 self._rep_down_start     = time.time()
 
         elif self._rep_state == "down":
-
             self._rep_min_angle_seen = min(self._rep_min_angle_seen, angle)
 
             if angle > _ANGLE_UP:
@@ -281,25 +272,59 @@ class AIEngine(QObject):
                 self._feedback.say(msg)
                 self.feedback_message.emit(f"checkmark {msg}", "info")
 
-            # Якщо занадто довго в DOWN без досягнення мінімуму — скидаємо
-            # (наприклад людина просто тримає руки зігнутими)
-            elif time_in_down > 5.0 and self._rep_min_angle_seen > _MIN_ANGLE_REACHED:
+            elif time_in_down > 6.0 and self._rep_min_angle_seen > _MIN_ANGLE_REACHED:
                 self._rep_state          = "up"
                 self._rep_frames_in_up   = 0
                 self._rep_min_angle_seen = 180.0
                 self._rep_down_start     = 0.0
 
-    # ── Technique validation ──────────────────────────────────────────────────
 
     def _check_technique(self, lm) -> List[str]:
         errors: List[str] = []
-        if abs(lm[_L_SHOULDER].y - lm[_R_SHOULDER].y) > _BACK_LEVEL_TOLERANCE:
-            errors.append("Keep your back straight")
-        if abs(lm[_L_HIP].y - lm[_R_HIP].y) > _HIP_STABILITY_TOLERANCE:
-            errors.append("Keep hips stable, feet on the floor")
+
+        l_el_vis  = self._lm_vis(lm, _L_ELBOW)    >= _VISIBILITY_MIN
+        r_el_vis  = self._lm_vis(lm, _R_ELBOW)    >= _VISIBILITY_MIN
+        l_wr_vis  = self._lm_vis(lm, _L_WRIST)    >= _VISIBILITY_MIN
+        r_wr_vis  = self._lm_vis(lm, _R_WRIST)    >= _VISIBILITY_MIN
+        l_sh_vis  = self._lm_vis(lm, _L_SHOULDER) >= _VISIBILITY_MIN
+        r_sh_vis  = self._lm_vis(lm, _R_SHOULDER) >= _VISIBILITY_MIN
+        l_ank_vis = self._lm_vis(lm, _L_ANKLE)    >= _VISIBILITY_MIN
+        r_ank_vis = self._lm_vis(lm, _R_ANKLE)    >= _VISIBILITY_MIN
+
+        if l_el_vis and r_el_vis:
+            if abs(lm[_L_ELBOW].y - lm[_R_ELBOW].y) > _ELBOW_SYMMETRY_TOLERANCE:
+                errors.append("Lower the bar evenly")
+
+
+        if self._rep_state == "down":
+            wrist_err = False
+            if l_el_vis and l_wr_vis:
+                if abs(lm[_L_WRIST].x - lm[_L_ELBOW].x) > _WRIST_BEND_TOLERANCE:
+                    wrist_err = True
+            if r_el_vis and r_wr_vis:
+                if abs(lm[_R_WRIST].x - lm[_R_ELBOW].x) > _WRIST_BEND_TOLERANCE:
+                    wrist_err = True
+            if wrist_err:
+                errors.append("Keep wrists straight over elbows")
+
+        if l_ank_vis and r_ank_vis:
+            avg_ankle_y = (lm[_L_ANKLE].y + lm[_R_ANKLE].y) / 2.0
+            if self._ankle_baseline is None:
+                self._ankle_baseline = avg_ankle_y
+            if avg_ankle_y > self._ankle_baseline:
+                self._ankle_baseline = avg_ankle_y * 0.95 + self._ankle_baseline * 0.05
+            lift = self._ankle_baseline - avg_ankle_y
+            if lift > _FOOT_LIFT_TOLERANCE:
+                self._foot_lift_frames += 1
+            else:
+                self._foot_lift_frames = max(0, self._foot_lift_frames - 1)
+            if self._foot_lift_frames >= _FOOT_LIFT_FRAMES:
+                errors.append("Keep feet flat on the floor")
+        else:
+            self._foot_lift_frames = 0
+
         return errors
 
-    # ── Drawing ───────────────────────────────────────────────────────────────
 
     def _draw_skeleton(self, frame, lm, w: int, h: int, correct: bool) -> None:
         colour = _GREEN if correct else _RED
@@ -318,7 +343,7 @@ class AIEngine(QObject):
 
     def _draw_hud(self, frame, angle: float, elapsed: int) -> None:
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (220, 115), _BLACK, -1)
+        cv2.rectangle(overlay, (10, 10), (240, 125), _BLACK, -1)
         cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
         reps_text = f"REPS: {self._reps}"
@@ -327,16 +352,22 @@ class AIEngine(QObject):
         cv2.putText(frame, reps_text, (18, 63),
                     cv2.FONT_HERSHEY_DUPLEX, 1.6, _WHITE, 3, cv2.LINE_AA)
 
-        # Поточний кут — допомагає калібрувати пороги
-        angle_text = f"ANG: {angle:.0f}"
-        cv2.putText(frame, angle_text, (20, 88),
+        angle_text = f"ANG: {angle:.0f}  [{self._rep_state.upper()}]"
+        cv2.putText(frame, angle_text, (20, 90),
                     cv2.FONT_HERSHEY_DUPLEX, 0.5, _BLACK, 2, cv2.LINE_AA)
-        cv2.putText(frame, angle_text, (19, 87),
+        cv2.putText(frame, angle_text, (19, 89),
                     cv2.FONT_HERSHEY_DUPLEX, 0.5, _WHITE, 1, cv2.LINE_AA)
+
+        if self._rep_state == "down":
+            min_text = f"MIN: {self._rep_min_angle_seen:.0f}"
+            cv2.putText(frame, min_text, (20, 103),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.45, _BLACK, 2, cv2.LINE_AA)
+            cv2.putText(frame, min_text, (19, 102),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.45, _YELLOW, 1, cv2.LINE_AA)
 
         pill_colour = _GREEN if self._set_active else _YELLOW
         status_text = "● ACTIVE" if self._set_active else "● WAITING"
-        cv2.putText(frame, status_text, (20, 108),
+        cv2.putText(frame, status_text, (20, 118),
                     cv2.FONT_HERSHEY_DUPLEX, 0.5, _BLACK, 2, cv2.LINE_AA)
-        cv2.putText(frame, status_text, (19, 107),
+        cv2.putText(frame, status_text, (19, 117),
                     cv2.FONT_HERSHEY_DUPLEX, 0.5, pill_colour, 1, cv2.LINE_AA)
