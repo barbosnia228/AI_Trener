@@ -4,12 +4,15 @@ import time
 import urllib.request
 from collections import deque
 from typing import List, Optional
+
 import cv2
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
+
 from src.ai.geometry import GeometryEngine
 from src.ai.validator import TechniqueValidator
 from src.ai.feedback import FeedbackEngine
@@ -36,6 +39,8 @@ _ELBOW_FLARE_RATIO        = 2.10
 _WRIST_BEND_TOLERANCE     = 0.12
 _FOOT_LIFT_TOLERANCE      = 0.08
 _FOOT_LIFT_FRAMES         = 8
+_ELBOW_ASYMMETRY_DEG      = 20.0
+_ELBOW_ASYMMETRY_FRAMES   = 8
 
 _L_SHOULDER, _R_SHOULDER = 11, 12
 _L_ELBOW,    _R_ELBOW    = 13, 14
@@ -62,13 +67,11 @@ _BLACK  = (0,    0,   0)
 
 _FEEDBACK_INTERVAL = 3.0
 
-
 def download_model() -> None:
     if not os.path.exists(_MODEL_PATH):
         print(f"[AIEngine] Downloading model -> {_MODEL_PATH} ...")
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
         print("[AIEngine] Model downloaded.")
-
 
 class AIEngine(QObject):
 
@@ -108,6 +111,7 @@ class AIEngine(QObject):
 
         self._foot_lift_frames: int = 0
         self._ankle_baseline: float = None
+        self._elbow_asym_frames: int = 0
 
         self._set_active: bool           = False
         self._set_index: int             = 0
@@ -116,7 +120,6 @@ class AIEngine(QObject):
         self._errors_this_set: List[str] = []
         self._form_scores: List[int]     = []
         self._current_angle: float       = 0.0
-
 
     @pyqtSlot(int)
     def on_set_started(self, index: int) -> None:
@@ -135,6 +138,7 @@ class AIEngine(QObject):
         self._form_scores        = []
         self._ankle_baseline     = None
         self._foot_lift_frames   = 0
+        self._elbow_asym_frames  = 0
         msg = f"Set {index + 1} started!"
         self._feedback.say(msg)
         self.feedback_message.emit(msg, "info")
@@ -217,7 +221,6 @@ class AIEngine(QObject):
         self.processed_frame.emit(frame)
         self.metrics_updated.emit(angle, self._reps, form_score, elapsed)
 
-
     def _lm_vis(self, lm, idx: int) -> float:
         return float(getattr(lm[idx], "visibility", 1.0))
 
@@ -278,7 +281,6 @@ class AIEngine(QObject):
                 self._rep_min_angle_seen = 180.0
                 self._rep_down_start     = 0.0
 
-
     def _check_technique(self, lm) -> List[str]:
         errors: List[str] = []
 
@@ -294,7 +296,6 @@ class AIEngine(QObject):
         if l_el_vis and r_el_vis:
             if abs(lm[_L_ELBOW].y - lm[_R_ELBOW].y) > _ELBOW_SYMMETRY_TOLERANCE:
                 errors.append("Lower the bar evenly")
-
 
         if self._rep_state == "down":
             wrist_err = False
@@ -322,9 +323,25 @@ class AIEngine(QObject):
                 errors.append("Keep feet flat on the floor")
         else:
             self._foot_lift_frames = 0
+        if self._rep_state == "down" and l_el_vis and r_el_vis and l_wr_vis and r_wr_vis and l_sh_vis and r_sh_vis:
+            l_angle = self._geometry.calculate_angle(
+                [lm[_L_SHOULDER].x, lm[_L_SHOULDER].y],
+                [lm[_L_ELBOW].x, lm[_L_ELBOW].y],
+                [lm[_L_WRIST].x, lm[_L_WRIST].y],
+            )
+            r_angle = self._geometry.calculate_angle(
+                [lm[_R_SHOULDER].x, lm[_R_SHOULDER].y],
+                [lm[_R_ELBOW].x, lm[_R_ELBOW].y],
+                [lm[_R_WRIST].x, lm[_R_WRIST].y],
+            )
+            if abs(l_angle - r_angle) > _ELBOW_ASYMMETRY_DEG:
+                self._elbow_asym_frames += 1
+            else:
+                self._elbow_asym_frames = max(0, self._elbow_asym_frames - 1)
+            if self._elbow_asym_frames >= _ELBOW_ASYMMETRY_FRAMES:
+                errors.append("Keep shoulders level")
 
         return errors
-
 
     def _draw_skeleton(self, frame, lm, w: int, h: int, correct: bool) -> None:
         colour = _GREEN if correct else _RED
