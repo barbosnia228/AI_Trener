@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -48,7 +49,6 @@ from src.gui.components import (
     PrimaryButton, SuccessButton, DangerButton, SecondaryButton,
     PALETTE, set_font,
 )
-from typing import Optional
 
 # ── App-wide stylesheet ────────────────────────────────────────────────────────
 APP_STYLESHEET = f"""
@@ -112,6 +112,8 @@ def _metric_card(layout: QHBoxLayout, label: str, value: str) -> QLabel:
     layout.addWidget(card)
     return v
 
+
+_DEFAULT_WEIGHT_KG = 60.0
 
 _BTN_STOP_STYLE = f"""
     QPushButton {{
@@ -295,6 +297,7 @@ class TrainingControlWindow(QMainWindow):
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(12)
         self._tabs.addTab(training_tab, "🏋️  Training")
+        self._stats_tab_index: int = -1  # set when stats tab is added
 
         # ── header ──────────────────────────────────────────────────────────
         hdr = QHBoxLayout()
@@ -380,7 +383,7 @@ class TrainingControlWindow(QMainWindow):
         sr = QVBoxLayout(stats_tab)
         sr.setContentsMargins(20, 16, 20, 16)
         sr.setSpacing(10)
-        self._tabs.addTab(stats_tab, "📊  Statistics")
+        self._stats_tab_index = self._tabs.addTab(stats_tab, "📊  Statistics")
 
         sr.addWidget(_label("Overall", size=10, muted=True))
         sc_row = QHBoxLayout()
@@ -419,7 +422,7 @@ class TrainingControlWindow(QMainWindow):
     # ── private ────────────────────────────────────────────────────────────────
 
     def _on_tab_changed(self, index: int) -> None:
-        if index == 1:
+        if index == self._stats_tab_index:
             self._refresh_stats()
 
     def _refresh_stats(self) -> None:
@@ -526,7 +529,7 @@ class TrainingControlWindow(QMainWindow):
         self._active = None
 
         for i in range(n):
-            row = _SetRow(i, reps, 60.0, self._on_start, self._on_finish, self._on_skip)
+            row = _SetRow(i, reps, _DEFAULT_WEIGHT_KG, self._on_start, self._on_finish, self._on_skip)
             self._sets_layout.addWidget(row)
             self._rows.append(row)
 
@@ -963,8 +966,8 @@ class CameraWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
             self._video.setPixmap(pixmap)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[CameraWindow] render error: {exc}", file=sys.stderr)
 
     def _show_placeholder(self) -> None:
         self._video.setText(
