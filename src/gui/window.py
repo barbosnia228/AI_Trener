@@ -609,6 +609,7 @@ class AnalysisWindow(QMainWindow):
         self._session_reps   = 0
         self._session_sets   = 0
         self._session_errors = 0
+        self._current_set_reps = 0
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -670,6 +671,7 @@ class AnalysisWindow(QMainWindow):
 
     def update(self, angle: float, reps: int, form_score: int, elapsed: int) -> None:
         """Call this every frame from your backend worker thread (via queued signal)."""
+        self._current_set_reps = reps
         self._v_reps.setText(str(reps))
         self._v_angle.setText(f"{angle:.1f}°")
         self._v_form.setText(f"{form_score}%")
@@ -700,6 +702,7 @@ class AnalysisWindow(QMainWindow):
             self._s_errors.setText(str(self._session_errors))
 
     def reset_set(self) -> None:
+        self._current_set_reps = 0
         self._v_reps.setText("0")
         self._v_angle.setText("—°")
         self._v_form.setText("—%")
@@ -728,8 +731,7 @@ class AnalysisWindow(QMainWindow):
 
     @pyqtSlot(int)
     def on_set_finished(self, _: int) -> None:
-        reps = int(self._v_reps.text())
-        self._session_reps += reps
+        self._session_reps += self._current_set_reps
         self._session_sets += 1
         self._s_reps.setText(str(self._session_reps))
         self._s_sets.setText(str(self._session_sets))
