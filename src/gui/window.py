@@ -132,23 +132,20 @@ _BTN_START_STYLE = f"""
 """
 
 
-def _apply_geometry(win: QMainWindow, lf: float, tf: float, wf: float, hf: float) -> None:
+def _apply_geometry(
+    win: QMainWindow, lf: float, tf: float, wf: float, hf: float,
+    tf_small: Optional[float] = None, hf_small: Optional[float] = None,
+) -> None:
     screen = QApplication.primaryScreen().geometry()
     sw, sh = screen.width(), screen.height()
     x = max(0, min(int(sw * lf), sw - 100))
     y = max(0, min(int(sh * tf), sh - 100))
     w = min(int(sw * wf), sw - x - 20)
     h = min(int(sh * hf), sh - y - 20)
-    if sw < 1200:
-        title = win.windowTitle()
-        if "Control" in title:
-            win.setGeometry(x, y, w, int(0.3 * sh))
-        elif "Analysis" in title:
-            win.setGeometry(x, int(0.35 * sh), w, int(0.25 * sh))
-        elif "Camera" in title:
-            win.setGeometry(x, int(0.62 * sh), w, int(0.35 * sh))
-        else:
-            win.setGeometry(x, y, w, h)
+    if sw < 1200 and (tf_small is not None or hf_small is not None):
+        y_s = int(sh * tf_small) if tf_small is not None else y
+        h_s = int(sh * hf_small) if hf_small is not None else h
+        win.setGeometry(x, y_s, w, h_s)
     else:
         win.setGeometry(x, y, w, h)
 
@@ -262,7 +259,7 @@ class TrainingControlWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("🏋️  AI Trainer — Control")
-        _apply_geometry(self, 0.05, 0.05, 0.40, 0.50)
+        _apply_geometry(self, 0.05, 0.05, 0.40, 0.50, hf_small=0.30)
         self.setMinimumHeight(620)
 
         self._rows: list[_SetRow] = []
@@ -606,7 +603,7 @@ class AnalysisWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("⚡  AI Trainer — Live Analysis")
-        _apply_geometry(self, 0.48, 0.05, 0.25, 0.45)
+        _apply_geometry(self, 0.48, 0.05, 0.25, 0.45, tf_small=0.35, hf_small=0.25)
         self.setMinimumHeight(540)
 
         self._session_reps   = 0
@@ -804,7 +801,7 @@ class CameraWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("📷  AI Trainer — Camera Feed")
-        _apply_geometry(self, 0.05, 0.52, 0.35, 0.55)
+        _apply_geometry(self, 0.05, 0.52, 0.35, 0.55, tf_small=0.62, hf_small=0.35)
 
         self._running    = False
         self._frames     = 0
