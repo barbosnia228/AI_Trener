@@ -223,7 +223,7 @@ class _SetRow(QFrame):
 
     def mark_active(self):
         self._status.setText("Active")
-        self._status.setStyleSheet(f"color: {PALETTE['warning'] if 'warning' in PALETTE else '#fdcb6e'};")
+        self._status.setStyleSheet(f"color: {PALETTE['warning']};")
         self._btn_start.setEnabled(False)
         self._btn_finish.setEnabled(True)
         self._btn_skip.setEnabled(False)
@@ -680,7 +680,7 @@ class AnalysisWindow(QMainWindow):
         self._v_time.setText(f"{m:02d}:{s:02d}")
 
         colour = (PALETTE["success"] if form_score >= 75
-                  else "#fdcb6e" if form_score >= 45 else PALETTE["danger"])
+                  else PALETTE["warning"] if form_score >= 45 else PALETTE["danger"])
         self._v_form.setStyleSheet(f"color: {colour};")
 
     def add_feedback(self, message: str, level: str = "info") -> None:
