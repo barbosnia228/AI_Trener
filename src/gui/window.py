@@ -251,7 +251,6 @@ class TrainingControlWindow(QMainWindow):
     set_started(index: int)
     set_finished(index: int)
     set_skipped(index: int)
-    stats_requested()
     """
 
     training_started  = pyqtSignal()
@@ -259,7 +258,6 @@ class TrainingControlWindow(QMainWindow):
     set_started       = pyqtSignal(int)
     set_finished      = pyqtSignal(int)
     set_skipped       = pyqtSignal(int)
-    stats_requested   = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -321,11 +319,7 @@ class TrainingControlWindow(QMainWindow):
         ]:
             col = QVBoxLayout()
             col.addWidget(_label(label_text, size=9, muted=True))
-            if spin_attr == "_spin_weight":
-                spin = QDoubleSpinBox()
-                spin.setSingleStep(2.5)
-            else:
-                spin = QSpinBox()
+            spin = QSpinBox()
             spin.setRange(mn, mx)
             spin.setValue(val)
             spin.setSuffix(suffix)
