@@ -39,6 +39,8 @@ def main() -> None:
     ctrl.set_finished.connect(analysis.on_set_finished)
     ctrl.set_finished.connect(engine.on_set_finished)
 
+    engine.set_summary.connect(ctrl.on_set_summary)
+
     ctrl.show()
     analysis.show()
     cam.show()

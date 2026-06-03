@@ -28,6 +28,8 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -48,7 +50,6 @@ from src.gui.components import (
     PrimaryButton, SuccessButton, DangerButton, SecondaryButton,
     PALETTE, set_font,
 )
-from typing import Optional
 
 # ── App-wide stylesheet ────────────────────────────────────────────────────────
 APP_STYLESHEET = f"""
@@ -113,6 +114,8 @@ def _metric_card(layout: QHBoxLayout, label: str, value: str) -> QLabel:
     return v
 
 
+_DEFAULT_WEIGHT_KG = 60.0
+
 _BTN_STOP_STYLE = f"""
     QPushButton {{
         background: {PALETTE['danger']}; color: #fff;
@@ -132,23 +135,20 @@ _BTN_START_STYLE = f"""
 """
 
 
-def _apply_geometry(win: QMainWindow, lf: float, tf: float, wf: float, hf: float) -> None:
+def _apply_geometry(
+    win: QMainWindow, lf: float, tf: float, wf: float, hf: float,
+    tf_small: Optional[float] = None, hf_small: Optional[float] = None,
+) -> None:
     screen = QApplication.primaryScreen().geometry()
     sw, sh = screen.width(), screen.height()
     x = max(0, min(int(sw * lf), sw - 100))
     y = max(0, min(int(sh * tf), sh - 100))
     w = min(int(sw * wf), sw - x - 20)
     h = min(int(sh * hf), sh - y - 20)
-    if sw < 1200:
-        title = win.windowTitle()
-        if "Control" in title:
-            win.setGeometry(x, y, w, int(0.3 * sh))
-        elif "Analysis" in title:
-            win.setGeometry(x, int(0.35 * sh), w, int(0.25 * sh))
-        elif "Camera" in title:
-            win.setGeometry(x, int(0.62 * sh), w, int(0.35 * sh))
-        else:
-            win.setGeometry(x, y, w, h)
+    if sw < 1200 and (tf_small is not None or hf_small is not None):
+        y_s = int(sh * tf_small) if tf_small is not None else y
+        h_s = int(sh * hf_small) if hf_small is not None else h
+        win.setGeometry(x, y_s, w, h_s)
     else:
         win.setGeometry(x, y, w, h)
 
@@ -214,6 +214,10 @@ class _SetRow(QFrame):
 
 
     @property
+    def weight(self) -> float:
+        return self._spin_weight.value()
+
+    @property
     def is_done(self) -> bool:
         return self._status.text() in ("Done ✓", "Skipped")
 
@@ -223,7 +227,7 @@ class _SetRow(QFrame):
 
     def mark_active(self):
         self._status.setText("Active")
-        self._status.setStyleSheet(f"color: {PALETTE['warning'] if 'warning' in PALETTE else '#fdcb6e'};")
+        self._status.setStyleSheet(f"color: {PALETTE['warning']};")
         self._btn_start.setEnabled(False)
         self._btn_finish.setEnabled(True)
         self._btn_skip.setEnabled(False)
@@ -251,7 +255,6 @@ class TrainingControlWindow(QMainWindow):
     set_started(index: int)
     set_finished(index: int)
     set_skipped(index: int)
-    stats_requested()
     """
 
     training_started  = pyqtSignal()
@@ -259,17 +262,17 @@ class TrainingControlWindow(QMainWindow):
     set_started       = pyqtSignal(int)
     set_finished      = pyqtSignal(int)
     set_skipped       = pyqtSignal(int)
-    stats_requested   = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("🏋️  AI Trainer — Control")
-        _apply_geometry(self, 0.05, 0.05, 0.40, 0.50)
+        _apply_geometry(self, 0.05, 0.05, 0.40, 0.50, hf_small=0.30)
         self.setMinimumHeight(620)
 
         self._rows: list[_SetRow] = []
         self._active: Optional[int]  = None
         self._elapsed = 0
+        self._set_summaries: list[dict] = []
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -300,6 +303,7 @@ class TrainingControlWindow(QMainWindow):
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(12)
         self._tabs.addTab(training_tab, "🏋️  Training")
+        self._stats_tab_index: int = -1  # set when stats tab is added
 
         # ── header ──────────────────────────────────────────────────────────
         hdr = QHBoxLayout()
@@ -321,11 +325,7 @@ class TrainingControlWindow(QMainWindow):
         ]:
             col = QVBoxLayout()
             col.addWidget(_label(label_text, size=9, muted=True))
-            if spin_attr == "_spin_weight":
-                spin = QDoubleSpinBox()
-                spin.setSingleStep(2.5)
-            else:
-                spin = QSpinBox()
+            spin = QSpinBox()
             spin.setRange(mn, mx)
             spin.setValue(val)
             spin.setSuffix(suffix)
@@ -389,7 +389,7 @@ class TrainingControlWindow(QMainWindow):
         sr = QVBoxLayout(stats_tab)
         sr.setContentsMargins(20, 16, 20, 16)
         sr.setSpacing(10)
-        self._tabs.addTab(stats_tab, "📊  Statistics")
+        self._stats_tab_index = self._tabs.addTab(stats_tab, "📊  Statistics")
 
         sr.addWidget(_label("Overall", size=10, muted=True))
         sc_row = QHBoxLayout()
@@ -428,7 +428,7 @@ class TrainingControlWindow(QMainWindow):
     # ── private ────────────────────────────────────────────────────────────────
 
     def _on_tab_changed(self, index: int) -> None:
-        if index == 1:
+        if index == self._stats_tab_index:
             self._refresh_stats()
 
     def _refresh_stats(self) -> None:
@@ -527,15 +527,15 @@ class TrainingControlWindow(QMainWindow):
         n = self._spin_sets.value()
         reps = self._spin_reps.value()
 
-        # rebuild rows
         for row in self._rows:
             self._sets_layout.removeWidget(row)
             row.deleteLater()
         self._rows.clear()
         self._active = None
+        self._set_summaries.clear()
 
         for i in range(n):
-            row = _SetRow(i, reps, 60.0, self._on_start, self._on_finish, self._on_skip)
+            row = _SetRow(i, reps, _DEFAULT_WEIGHT_KG, self._on_start, self._on_finish, self._on_skip)
             self._sets_layout.addWidget(row)
             self._rows.append(row)
 
@@ -557,6 +557,8 @@ class TrainingControlWindow(QMainWindow):
         for sp in (self._spin_sets, self._spin_reps):
             sp.setEnabled(True)
         self._status_lbl.setText("Training stopped.")
+        if self._set_summaries:
+            self._save_session()
         self.training_stopped.emit()
 
     def _on_start(self, idx: int):
@@ -580,6 +582,30 @@ class TrainingControlWindow(QMainWindow):
         self._update_sets_label()
         self.set_skipped.emit(idx)
         self._check_all_done()
+
+    @pyqtSlot(dict)
+    def on_set_summary(self, summary: dict) -> None:
+        self._set_summaries.append(summary)
+
+    def _save_session(self) -> None:
+        sets = []
+        all_errors: list[str] = []
+        for s in self._set_summaries:
+            idx = s["set_index"]
+            weight = self._rows[idx].weight if idx < len(self._rows) else _DEFAULT_WEIGHT_KG
+            sets.append({"reps": s["reps"], "weight": weight})
+            all_errors.extend(s.get("errors", []))
+        session = {
+            "date":     datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "rating":   0,
+            "feedback": "normal",
+            "sets":     sets,
+            "errors":   list(dict.fromkeys(all_errors)),
+        }
+        try:
+            self._repo.save_session(json.dumps(session, ensure_ascii=False))
+        except Exception as exc:
+            print(f"[TrainingControlWindow] DB save error: {exc}", file=sys.stderr)
 
     def _check_all_done(self):
         if self._rows and all(row.is_done for row in self._rows):
@@ -612,12 +638,13 @@ class AnalysisWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("⚡  AI Trainer — Live Analysis")
-        _apply_geometry(self, 0.48, 0.05, 0.25, 0.45)
+        _apply_geometry(self, 0.48, 0.05, 0.25, 0.45, tf_small=0.35, hf_small=0.25)
         self.setMinimumHeight(540)
 
         self._session_reps   = 0
         self._session_sets   = 0
         self._session_errors = 0
+        self._current_set_reps = 0
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -679,6 +706,7 @@ class AnalysisWindow(QMainWindow):
 
     def update(self, angle: float, reps: int, form_score: int, elapsed: int) -> None:
         """Call this every frame from your backend worker thread (via queued signal)."""
+        self._current_set_reps = reps
         self._v_reps.setText(str(reps))
         self._v_angle.setText(f"{angle:.1f}°")
         self._v_form.setText(f"{form_score}%")
@@ -686,7 +714,7 @@ class AnalysisWindow(QMainWindow):
         self._v_time.setText(f"{m:02d}:{s:02d}")
 
         colour = (PALETTE["success"] if form_score >= 75
-                  else "#fdcb6e" if form_score >= 45 else PALETTE["danger"])
+                  else PALETTE["warning"] if form_score >= 45 else PALETTE["danger"])
         self._v_form.setStyleSheet(f"color: {colour};")
 
     def add_feedback(self, message: str, level: str = "info") -> None:
@@ -709,6 +737,7 @@ class AnalysisWindow(QMainWindow):
             self._s_errors.setText(str(self._session_errors))
 
     def reset_set(self) -> None:
+        self._current_set_reps = 0
         self._v_reps.setText("0")
         self._v_angle.setText("—°")
         self._v_form.setText("—%")
@@ -737,8 +766,7 @@ class AnalysisWindow(QMainWindow):
 
     @pyqtSlot(int)
     def on_set_finished(self, _: int) -> None:
-        reps = int(self._v_reps.text())
-        self._session_reps += reps
+        self._session_reps += self._current_set_reps
         self._session_sets += 1
         self._s_reps.setText(str(self._session_reps))
         self._s_sets.setText(str(self._session_sets))
@@ -810,7 +838,7 @@ class CameraWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("📷  AI Trainer — Camera Feed")
-        _apply_geometry(self, 0.05, 0.52, 0.35, 0.55)
+        _apply_geometry(self, 0.05, 0.52, 0.35, 0.55, tf_small=0.62, hf_small=0.35)
 
         self._running    = False
         self._frames     = 0
@@ -970,8 +998,8 @@ class CameraWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
             self._video.setPixmap(pixmap)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[CameraWindow] render error: {exc}", file=sys.stderr)
 
     def _show_placeholder(self) -> None:
         self._video.setText(

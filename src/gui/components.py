@@ -15,6 +15,7 @@ PALETTE = {
     "accent":  "#e94560",
     "success": "#00b894",
     "danger":  "#d63031",
+    "warning": "#fdcb6e",
     "text":    "#ffffff",
     "muted":   "#a0a0b0",
     "border":  "#2d2d4e",
