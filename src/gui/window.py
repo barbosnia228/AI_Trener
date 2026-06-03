@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from typing import Optional
 
 import cv2
@@ -213,6 +214,10 @@ class _SetRow(QFrame):
 
 
     @property
+    def weight(self) -> float:
+        return self._spin_weight.value()
+
+    @property
     def is_done(self) -> bool:
         return self._status.text() in ("Done ✓", "Skipped")
 
@@ -267,6 +272,7 @@ class TrainingControlWindow(QMainWindow):
         self._rows: list[_SetRow] = []
         self._active: Optional[int]  = None
         self._elapsed = 0
+        self._set_summaries: list[dict] = []
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -521,12 +527,12 @@ class TrainingControlWindow(QMainWindow):
         n = self._spin_sets.value()
         reps = self._spin_reps.value()
 
-        # rebuild rows
         for row in self._rows:
             self._sets_layout.removeWidget(row)
             row.deleteLater()
         self._rows.clear()
         self._active = None
+        self._set_summaries.clear()
 
         for i in range(n):
             row = _SetRow(i, reps, _DEFAULT_WEIGHT_KG, self._on_start, self._on_finish, self._on_skip)
@@ -551,6 +557,8 @@ class TrainingControlWindow(QMainWindow):
         for sp in (self._spin_sets, self._spin_reps):
             sp.setEnabled(True)
         self._status_lbl.setText("Training stopped.")
+        if self._set_summaries:
+            self._save_session()
         self.training_stopped.emit()
 
     def _on_start(self, idx: int):
@@ -574,6 +582,30 @@ class TrainingControlWindow(QMainWindow):
         self._update_sets_label()
         self.set_skipped.emit(idx)
         self._check_all_done()
+
+    @pyqtSlot(dict)
+    def on_set_summary(self, summary: dict) -> None:
+        self._set_summaries.append(summary)
+
+    def _save_session(self) -> None:
+        sets = []
+        all_errors: list[str] = []
+        for s in self._set_summaries:
+            idx = s["set_index"]
+            weight = self._rows[idx].weight if idx < len(self._rows) else _DEFAULT_WEIGHT_KG
+            sets.append({"reps": s["reps"], "weight": weight})
+            all_errors.extend(s.get("errors", []))
+        session = {
+            "date":     datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "rating":   0,
+            "feedback": "normal",
+            "sets":     sets,
+            "errors":   list(dict.fromkeys(all_errors)),
+        }
+        try:
+            self._repo.save_session(json.dumps(session, ensure_ascii=False))
+        except Exception as exc:
+            print(f"[TrainingControlWindow] DB save error: {exc}", file=sys.stderr)
 
     def _check_all_done(self):
         if self._rows and all(row.is_done for row in self._rows):
