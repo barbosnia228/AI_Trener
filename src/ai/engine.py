@@ -14,7 +14,6 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 from src.ai.geometry import GeometryEngine
-from src.ai.validator import TechniqueValidator
 from src.ai.feedback import FeedbackEngine
 
 _MODEL_PATH = "pose_landmarker.task"
@@ -23,24 +22,24 @@ _MODEL_URL  = (
     "pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 )
 
-_ANGLE_UP   = 125.0
-_ANGLE_DOWN =  85.0
+_ANGLE_UP   = 125.0   # angle (degrees) above which the position is considered "up"
+_ANGLE_DOWN =  85.0   # angle below which the position is considered "down"
 
-_ANGLE_SMOOTH_FRAMES = 6
+_ANGLE_SMOOTH_FRAMES = 6  # number of frames averaged using a sliding window
 
-_MIN_ANGLE_REACHED   =  70.0
-_MIN_TIME_DOWN_SEC   = 0.25
-_MIN_FRAMES_UP       = 4
-_REP_COOLDOWN_FRAMES = 15
-_VISIBILITY_MIN = 0.30
+_MIN_ANGLE_REACHED   =  70.0  # minimum angle that must be reached during the "down" phase
+_MIN_TIME_DOWN_SEC   = 0.25   # minimum time (seconds) spent in the "down" phase
+_MIN_FRAMES_UP       = 4      # consecutive frames above _ANGLE_UP required to confirm the return
+_REP_COOLDOWN_FRAMES = 15     # frames locked after counting a rep (prevents double-counting)
+_VISIBILITY_MIN      = 0.30   # minimum landmark visibility confidence (0–1)
 
-_ELBOW_SYMMETRY_TOLERANCE = 0.20
-_ELBOW_FLARE_RATIO        = 2.10
-_WRIST_BEND_TOLERANCE     = 0.12
-_FOOT_LIFT_TOLERANCE      = 0.08
-_FOOT_LIFT_FRAMES         = 8
-_ELBOW_ASYMMETRY_DEG      = 20.0
-_ELBOW_ASYMMETRY_FRAMES   = 8
+_ELBOW_SYMMETRY_TOLERANCE = 0.20   # max Y difference between elbows (normalised) — bar level check
+_ELBOW_FLARE_RATIO        = 2.10   # reserved threshold for elbow flare (not yet used)
+_WRIST_BEND_TOLERANCE     = 0.12   # max X offset between wrist and elbow — wrist bend check
+_FOOT_LIFT_TOLERANCE      = 0.08   # max ankle rise above baseline (normalised coords)
+_FOOT_LIFT_FRAMES         = 8      # frames of foot lift before triggering the cue
+_ELBOW_ASYMMETRY_DEG      = 20.0   # max L/R elbow angle difference (degrees)
+_ELBOW_ASYMMETRY_FRAMES   = 8      # frames of asymmetry before triggering the cue
 
 _L_SHOULDER, _R_SHOULDER = 11, 12
 _L_ELBOW,    _R_ELBOW    = 13, 14
@@ -59,21 +58,47 @@ _CONNECTIONS = [
     (_R_HIP, _R_KNEE), (_R_KNEE, _R_ANKLE),
 ]
 
-_GREEN  = (0, 184, 148)
-_RED    = (48,  48, 214)
-_YELLOW = (0,  203, 253)
-_WHITE  = (255, 255, 255)
-_BLACK  = (0,    0,   0)
+_GREEN  = (0, 184, 148)   # correct technique
+_RED    = (48,  48, 214)  # technique error
+_YELLOW = (0,  203, 253)  # accent (min angle in HUD, WAITING status)
+_WHITE  = (255, 255, 255) # landmark border
+_BLACK  = (0,    0,   0)  # HUD panel background
+_FEEDBACK_INTERVAL = 3.0  # seconds between consecutive voice cues
 
-_FEEDBACK_INTERVAL = 3.0
 
 def download_model() -> None:
+    """
+    Download the PoseLandmarker model from Google Storage if not already present.
+
+    The file is saved in the current working directory as ``pose_landmarker.task``.
+    Does nothing if the file already exists.
+    """
     if not os.path.exists(_MODEL_PATH):
         print(f"[AIEngine] Downloading model -> {_MODEL_PATH} ...")
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
         print("[AIEngine] Model downloaded.")
 
+
 class AIEngine(QObject):
+    """
+    Main AI engine — processes video frames and emits Qt signals.
+
+    Inherits from ``QObject`` to integrate with the PyQt6 signal-slot architecture.
+    All public methods should be called from Qt slots or the main thread.
+
+    Signals
+    -------
+    processed_frame : np.ndarray
+        BGR frame with skeleton and HUD rendered, ready for display.
+    metrics_updated : (float, int, int, int)
+        Four metrics: elbow angle, rep count, form score (0–100),
+        elapsed set duration in seconds.
+    feedback_message : (str, str)
+        Pair of (message text, type: "info" | "warning") for display in the UI.
+    set_summary : dict
+        Set summary dict emitted when a set ends.
+        Keys: set_index, reps, errors, avg_form, duration.
+    """
 
     processed_frame  = pyqtSignal(np.ndarray)
     metrics_updated  = pyqtSignal(float, int, int, int)
@@ -81,6 +106,16 @@ class AIEngine(QObject):
     set_summary      = pyqtSignal(dict)
 
     def __init__(self, parent: QObject = None) -> None:
+        """
+        Initialise the AI engine: download the model, create the MediaPipe detector,
+        and set up helper engines (geometry, voice feedback).
+        Resets all set and rep state variables to their initial values.
+
+        Parameters
+        ----------
+        parent : QObject, optional
+            Qt parent object for lifetime management.
+        """
         super().__init__(parent)
 
         download_model()
@@ -96,9 +131,8 @@ class AIEngine(QObject):
         )
         self._detector = mp_vision.PoseLandmarker.create_from_options(options)
 
-        self._geometry  = GeometryEngine()
-        self._validator = TechniqueValidator()
-        self._feedback  = FeedbackEngine()
+        self._geometry = GeometryEngine()
+        self._feedback = FeedbackEngine()
 
         self._angle_buffer: deque[float] = deque(maxlen=_ANGLE_SMOOTH_FRAMES)
 
@@ -109,8 +143,8 @@ class AIEngine(QObject):
         self._rep_down_start: float     = 0.0
         self._rep_cooldown: int         = 0
 
-        self._foot_lift_frames: int = 0
-        self._ankle_baseline: float = None
+        self._foot_lift_frames: int  = 0
+        self._ankle_baseline: float  = None
         self._elbow_asym_frames: int = 0
 
         self._set_active: bool           = False
@@ -123,6 +157,17 @@ class AIEngine(QObject):
 
     @pyqtSlot(int)
     def on_set_started(self, index: int) -> None:
+        """
+        Slot called by the UI when the user starts a new set.
+
+        Resets rep counters, angle buffer, error history, and form score list.
+        Emits a voice cue and a ``feedback_message`` signal.
+
+        Parameters
+        ----------
+        index : int
+            Zero-based set number. Displayed to the user as ``index + 1``.
+        """
         self._set_index          = index
         self._reps               = 0
         self._rep_state          = "up"
@@ -145,6 +190,24 @@ class AIEngine(QObject):
 
     @pyqtSlot(int)
     def on_set_finished(self, index: int) -> None:
+        """
+        Slot called by the UI when a set is completed.
+
+        Computes the average form score across all frames of the set,
+        builds a summary dict, and emits the ``set_summary`` signal.
+        Does nothing if no set was active.
+
+        Parameters
+        ----------
+        index : int
+            Zero-based index of the finished set.
+
+        Emits
+        -----
+        set_summary : dict
+            Keys: set_index (int), reps (int), errors (list[str]),
+            avg_form (int, 0–100), duration (int, seconds).
+        """
         if not self._set_active:
             return
         self._set_active = False
@@ -166,6 +229,12 @@ class AIEngine(QObject):
 
     @pyqtSlot()
     def on_training_stopped(self) -> None:
+        """
+        Slot called when training is interrupted (e.g. window closed).
+
+        Deactivates the current set and resets the entire rep state machine
+        to its initial state without emitting a summary.
+        """
         self._set_active         = False
         self._reps               = 0
         self._rep_state          = "up"
@@ -177,6 +246,24 @@ class AIEngine(QObject):
 
     @pyqtSlot(np.ndarray)
     def process_frame(self, bgr: np.ndarray) -> None:
+        """
+        Main per-frame processing method — called once per video frame.
+
+        Executes the full pipeline:
+          1. BGR → RGB conversion and MediaPipe pose detection.
+          2. Smoothed elbow angle calculation (_avg_elbow_angle).
+          3. Rep counting (_count_rep) when landmarks are visible.
+          4. Technique checking (_check_technique) and error collection.
+          5. Form score: 100 − (error_count × 25), minimum 0.
+          6. Voice + visual feedback for the first error every _FEEDBACK_INTERVAL s.
+          7. Skeleton and HUD rendering on the frame.
+          8. Emission of ``processed_frame`` and ``metrics_updated`` signals.
+
+        Parameters
+        ----------
+        bgr : np.ndarray
+            Video frame in BGR format (OpenCV default), shape (H, W, 3).
+        """
         rgb      = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result   = self._detector.detect(mp_image)
@@ -222,9 +309,45 @@ class AIEngine(QObject):
         self.metrics_updated.emit(angle, self._reps, form_score, elapsed)
 
     def _lm_vis(self, lm, idx: int) -> float:
+        """
+        Return the visibility confidence of a landmark at the given index.
+
+        Falls back to 1.0 if the landmark has no ``visibility`` attribute
+        (e.g. older versions of MediaPipe).
+
+        Parameters
+        ----------
+        lm : list[NormalizedLandmark]
+            Landmark list from a single pose detection result.
+        idx : int
+            Landmark index (e.g. _L_ELBOW = 13).
+
+        Returns
+        -------
+        float
+            Visibility value in the range [0.0, 1.0].
+        """
         return float(getattr(lm[idx], "visibility", 1.0))
 
     def _avg_elbow_angle(self, lm) -> Optional[float]:
+        """
+        Compute the average elbow angle across both arms.
+
+        For each arm, checks the visibility of the shoulder–elbow–wrist triplet.
+        A landmark is included only when all three points have visibility ≥ _VISIBILITY_MIN.
+        The average is computed only from the visible arms.
+
+        Parameters
+        ----------
+        lm : list[NormalizedLandmark]
+            Landmark list from the current frame.
+
+        Returns
+        -------
+        float | None
+            Averaged elbow angle in degrees, or ``None`` if neither elbow
+            is sufficiently visible.
+        """
         angles = []
         for sh, el, wr in [(_L_SHOULDER, _L_ELBOW, _L_WRIST),
                             (_R_SHOULDER, _R_ELBOW, _R_WRIST)]:
@@ -241,6 +364,24 @@ class AIEngine(QObject):
         return sum(angles) / len(angles) if angles else None
 
     def _count_rep(self, angle: float) -> None:
+        """
+        Run the rep-counting state machine on the current smoothed angle.
+
+        States: "up" (starting position) → "down" (bar lowering) → "up".
+        A rep is counted when:
+          - The angle rises above _ANGLE_UP for at least _MIN_FRAMES_UP consecutive frames,
+          - At least _MIN_TIME_DOWN_SEC was spent in the "down" phase,
+          - The minimum angle reached during "down" was ≤ _MIN_ANGLE_REACHED.
+
+        After a valid rep a cooldown of _REP_COOLDOWN_FRAMES blocks further counting.
+        If the user stays in "down" for more than 6 seconds without reaching the
+        required angle, the machine resets to "up" without counting a rep.
+
+        Parameters
+        ----------
+        angle : float
+            Current smoothed elbow angle in degrees.
+        """
         if self._rep_cooldown > 0:
             self._rep_cooldown -= 1
             return
@@ -282,6 +423,34 @@ class AIEngine(QObject):
                 self._rep_down_start     = 0.0
 
     def _check_technique(self, lm) -> List[str]:
+        """
+        Analyse the current landmarks for technique errors and return a list of cues.
+
+        Checks performed (in priority order):
+          1. **Bar symmetry** — Y difference between left and right elbows exceeds
+             _ELBOW_SYMMETRY_TOLERANCE (bar not horizontal).
+          2. **Wrist bend** — X offset between wrist and elbow exceeds
+             _WRIST_BEND_TOLERANCE (checked only during the "down" phase).
+          3. **Foot lift** — ankles rise above the established baseline by more than
+             _FOOT_LIFT_TOLERANCE for at least _FOOT_LIFT_FRAMES consecutive frames.
+          4. **Elbow asymmetry** — L/R elbow angle difference exceeds
+             _ELBOW_ASYMMETRY_DEG for at least _ELBOW_ASYMMETRY_FRAMES consecutive
+             frames (checked only during "down" when all landmarks are visible).
+
+        Checks 3 and 4 use hysteresis (frame counters) to prevent cue flickering
+        caused by momentary detection noise.
+
+        Parameters
+        ----------
+        lm : list[NormalizedLandmark]
+            Landmark list from the current frame.
+
+        Returns
+        -------
+        list[str]
+            List of human-readable error cues (may be empty).
+            Callers should treat errors[0] as the highest-priority cue.
+        """
         errors: List[str] = []
 
         l_el_vis  = self._lm_vis(lm, _L_ELBOW)    >= _VISIBILITY_MIN
@@ -292,11 +461,9 @@ class AIEngine(QObject):
         r_sh_vis  = self._lm_vis(lm, _R_SHOULDER) >= _VISIBILITY_MIN
         l_ank_vis = self._lm_vis(lm, _L_ANKLE)    >= _VISIBILITY_MIN
         r_ank_vis = self._lm_vis(lm, _R_ANKLE)    >= _VISIBILITY_MIN
-
         if l_el_vis and r_el_vis:
             if abs(lm[_L_ELBOW].y - lm[_R_ELBOW].y) > _ELBOW_SYMMETRY_TOLERANCE:
                 errors.append("Lower the bar evenly")
-
         if self._rep_state == "down":
             wrist_err = False
             if l_el_vis and l_wr_vis:
@@ -307,7 +474,6 @@ class AIEngine(QObject):
                     wrist_err = True
             if wrist_err:
                 errors.append("Keep wrists straight over elbows")
-
         if l_ank_vis and r_ank_vis:
             avg_ankle_y = (lm[_L_ANKLE].y + lm[_R_ANKLE].y) / 2.0
             if self._ankle_baseline is None:
@@ -323,7 +489,11 @@ class AIEngine(QObject):
                 errors.append("Keep feet flat on the floor")
         else:
             self._foot_lift_frames = 0
-        if self._rep_state == "down" and l_el_vis and r_el_vis and l_wr_vis and r_wr_vis and l_sh_vis and r_sh_vis:
+
+        if (self._rep_state == "down"
+                and l_el_vis and r_el_vis
+                and l_wr_vis and r_wr_vis
+                and l_sh_vis and r_sh_vis):
             l_angle = self._geometry.calculate_angle(
                 [lm[_L_SHOULDER].x, lm[_L_SHOULDER].y],
                 [lm[_L_ELBOW].x, lm[_L_ELBOW].y],
@@ -344,6 +514,24 @@ class AIEngine(QObject):
         return errors
 
     def _draw_skeleton(self, frame, lm, w: int, h: int, correct: bool) -> None:
+        """
+        Draw the pose skeleton on the frame using OpenCV.
+
+        Connection lines and joint circles are green when technique is correct
+        (``correct=True``) or red when errors are detected.
+        Each joint is outlined in white for readability on any background.
+
+        Parameters
+        ----------
+        frame : np.ndarray
+            BGR frame to modify in-place.
+        lm : list[NormalizedLandmark]
+            Landmark list with normalised coordinates in [0, 1].
+        w, h : int
+            Frame width and height in pixels (used to scale coordinates).
+        correct : bool
+            ``True`` → green skeleton; ``False`` → red skeleton.
+        """
         colour = _GREEN if correct else _RED
         for a, b in _CONNECTIONS:
             if a < len(lm) and b < len(lm):
@@ -359,6 +547,30 @@ class AIEngine(QObject):
                 cv2.circle(frame, (cx, cy), 5, _WHITE,  1, cv2.LINE_AA)
 
     def _draw_hud(self, frame, angle: float, elapsed: int) -> None:
+        """
+        Draw a semi-transparent HUD panel in the top-left corner of the frame.
+
+        Panel contents:
+          - Rep counter (REPS) — large font.
+          - Current elbow angle and state machine status (UP / DOWN).
+          - Minimum angle reached during the current descent (MIN) —
+            shown only in the "down" phase, in yellow.
+          - Status indicator: ● ACTIVE (green) or ● WAITING (yellow).
+
+        Each text element is rendered twice: first with a thick black stroke
+        (shadow), then with a thinner white layer — ensuring readability on
+        any background colour.
+
+        Parameters
+        ----------
+        frame : np.ndarray
+            BGR frame to modify in-place.
+        angle : float
+            Current smoothed elbow angle in degrees.
+        elapsed : int
+            Time elapsed since the start of the current set in seconds
+            (0 when no set is active).
+        """
         overlay = frame.copy()
         cv2.rectangle(overlay, (10, 10), (240, 125), _BLACK, -1)
         cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
