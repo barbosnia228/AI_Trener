@@ -36,7 +36,6 @@ AI_Trener/
     ├── ai/
     │   ├── engine.py        # Core AI: pose detection, rep counting, technique validation
     │   ├── geometry.py      # Angle calculations
-    │   ├── validator.py     # Technique rules
     │   └── feedback.py      # Voice feedback via pyttsx3
     ├── database/
     │   ├── connection.py    # SQLite connection and schema init
