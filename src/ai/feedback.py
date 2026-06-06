@@ -3,32 +3,61 @@ import queue
 
 
 class FeedbackEngine:
+    """
+    Asynchronous text-to-speech engine for training coaching cues.
+
+    Messages are queued and spoken sequentially in a daemon background thread,
+    so they never block the video processing loop.
+    Duplicate messages already waiting in the queue are silently ignored.
+    """
+
     def __init__(self):
+        """
+        Initialise the TTS engine and start the worker thread.
+
+        Blocks the calling thread for up to 5 seconds while waiting for TTS
+        to become ready (signalled via ``threading.Event``). Continues regardless
+        if the timeout expires.
+        """
         self._queue: queue.Queue[str] = queue.Queue()
         self._ready = threading.Event()
 
-        # COM must be initialised on the same thread that uses it,
-        # so we spin up a dedicated daemon thread.
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
 
-        # Wait up to 5 seconds for TTS to initialise
         self._ready.wait(timeout=5.0)
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
     def say(self, message: str) -> None:
+        """
+        Add a coaching cue to the TTS playback queue (thread-safe).
+
+        If an identical message is already waiting in the queue, the new one
+        is discarded — this prevents the same warning from being repeated
+        in rapid succession.
+
+        Parameters
+        ----------
+        message : str
+            Text to be spoken by the TTS engine.
+        """
         pending = list(self._queue.queue)
         if message not in pending:
             self._queue.put(message)
 
-    # ── Private ───────────────────────────────────────────────────────────────
 
     def _run(self) -> None:
+        """
+        Main loop of the TTS worker thread.
+
+        Initialises the speech engine, then dequeues and speaks messages
+        indefinitely. Falls back to printing messages to stdout if no TTS
+        engine is available.
+
+        Called exclusively by ``threading.Thread`` — do not invoke directly.
+        """
         speaker = self._init_engine()
 
         if speaker is None:
-            # TTS unavailable — fall back to print
             while True:
                 msg = self._queue.get()
                 print(f"[TTS] {msg}")
@@ -47,22 +76,35 @@ class FeedbackEngine:
 
     def _init_engine(self):
         """
-        Try win32com SAPI first (most reliable on Windows background threads),
-        fall back to pyttsx3, then silent.
-        Returns a callable: speak_fn(text) -> None, or None on failure.
+        Attempt to initialise a TTS engine in priority order.
+
+        Tries the following in sequence:
+          1. **win32com SAPI** (Windows only) — stable, uses system voices.
+             Prefers an English voice (Zira, David, Hazel, …); falls back to a
+             Polish voice (Paulina, Zosia, …); uses the system default if neither
+             is found.
+          2. **pyttsx3** — cross-platform TTS wrapper. Prefers a Polish voice;
+             uses the system default if none is found.
+          3. **No TTS** — returns ``None``; messages will only appear on stdout.
+
+        Signals readiness via ``self._ready.set()`` after a successful init
+        (or after all options are exhausted).
+
+        Returns
+        -------
+        callable | None
+            A ``speak(text: str) -> None`` function ready to call,
+            or ``None`` if no TTS engine is available.
         """
 
-        # ── Option 1: win32com SAPI (Windows only) ────────────────────────────
         try:
             import pythoncom
             import win32com.client
 
-            # CoInitialize must be called on this thread
             pythoncom.CoInitialize()
 
             sapi = win32com.client.Dispatch("SAPI.SpVoice")
 
-            # Find best voice: English first, Polish fallback
             voices = sapi.GetVoices()
             chosen_token = None
             chosen_desc  = ""
@@ -95,21 +137,20 @@ class FeedbackEngine:
             else:
                 print("[FeedbackEngine] No suitable voice found. Using system default.")
 
-            sapi.Rate   = 1    # -10 (slow) … 10 (fast), 1 ≈ 155 wpm
-            sapi.Volume = 100  # 0-100
+            sapi.Rate   = 1
+            sapi.Volume = 100
 
             print("[FeedbackEngine] TTS ready (win32com SAPI).")
 
             def speak(text: str) -> None:
-                # 0 = synchronous (blocks until done)
                 sapi.Speak(text, 0)
 
+            self._ready.set()
             return speak
 
         except Exception as e:
             print(f"[FeedbackEngine] win32com SAPI unavailable: {e}")
 
-        # ── Option 2: pyttsx3 fallback ────────────────────────────────────────
         try:
             import pyttsx3
 
@@ -139,8 +180,10 @@ class FeedbackEngine:
                 engine.say(text)
                 engine.runAndWait()
 
+            self._ready.set()
             return speak
 
         except Exception as e:
             print(f"[FeedbackEngine] pyttsx3 unavailable: {e}")
+            self._ready.set()
             return None
