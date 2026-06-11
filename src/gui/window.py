@@ -45,11 +45,14 @@ from PyQt6.QtWidgets import (
 )
 
 from src.database.repository import WorkoutRepository
+from src.database.rating import calculate_rating
 
 from src.gui.components import (
     PrimaryButton, SuccessButton, DangerButton, SecondaryButton,
     PALETTE, set_font,
 )
+
+
 
 # ── App-wide stylesheet ────────────────────────────────────────────────────────
 APP_STYLESHEET = f"""
@@ -590,6 +593,17 @@ class TrainingControlWindow(QMainWindow):
     def _save_session(self) -> None:
         sets = []
         all_errors: list[str] = []
+
+        target_sets = self._spin_sets.value()
+        target_reps = self._spin_reps.value()
+
+        rating = calculate_rating(
+            actual_sets=sets,
+            target_sets=target_sets,
+            target_reps=target_reps,
+            errors=all_errors
+        )
+
         for s in self._set_summaries:
             idx = s["set_index"]
             weight = self._rows[idx].weight if idx < len(self._rows) else _DEFAULT_WEIGHT_KG
@@ -597,7 +611,7 @@ class TrainingControlWindow(QMainWindow):
             all_errors.extend(s.get("errors", []))
         session = {
             "date":     datetime.now().strftime("%d.%m.%Y %H:%M"),
-            "rating":   0,
+            "rating":   rating,
             "feedback": "normal",
             "sets":     sets,
             "errors":   list(dict.fromkeys(all_errors)),
