@@ -776,7 +776,7 @@ class AnalysisWindow(QMainWindow):
             old = self._log_entries.pop(0)
             self._log_layout.removeWidget(old)
             old.deleteLater()
-        if level == "error":
+        if level in ("warning"): #, "error"
             self._session_errors += 1
             self._s_errors.setText(str(self._session_errors))
 
