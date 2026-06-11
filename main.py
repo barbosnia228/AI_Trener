@@ -41,6 +41,7 @@ def main() -> None:
 
     engine.set_summary.connect(ctrl.on_set_summary)
 
+
     ctrl.show()
     analysis.show()
     cam.show()
