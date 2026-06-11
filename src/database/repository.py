@@ -6,11 +6,43 @@ from .models import WorkoutSession, WorkoutSet
 
 
 class WorkoutRepository:
+    """
+    Data-access layer for workout sessions.
+
+    Wraps all SQLite read/write operations for the ``workouts``, ``sets``,
+    and ``errors`` tables. Every public method accepts or returns plain JSON
+    strings so that callers (e.g. an AI agent or HTTP handler) stay decoupled
+    from the database schema.
+
+    The database is initialised automatically on construction via ``init_db()``,
+    so no separate setup step is required.
+    """
     def __init__(self):
         init_db()
 
     def save_session(self, session_json: str):
-        """Saves workout session from JSON"""
+        """
+        Persists a workout session from a JSON string to the database.
+
+        Parses the input, inserts a row into ``workouts``, then inserts one row
+        per set into ``sets`` and one row per form error into ``errors``.
+        All three inserts are wrapped in a single transaction — either all
+        succeed or none are committed.
+
+        Parameters
+        ----------
+        session_json : str
+            JSON string with the following optional keys:
+
+            - ``date`` *(str)* — session datetime; defaults to the current
+              time formatted as ``'DD.MM.YYYY HH:MM'`` if omitted.
+            - ``rating`` *(int)* — quality score 0–10; defaults to ``0``.
+            - ``feedback`` *(str)* — weight recommendation; defaults to ``'normal'``.
+            - ``sets`` *(list of dict)* — each dict must have ``'reps'`` *(int)*
+              and ``'weight'`` *(float)*; set order is derived from list position.
+            - ``errors`` *(list of str)* — form error descriptions to attach
+              to the session.
+        """
     
         session = json.loads(session_json)
     
@@ -51,7 +83,22 @@ class WorkoutRepository:
             conn.commit()
 
     def get_full_analytics_json(self) -> str:
-        """Returns JSON containing global stats, chart data, and full history"""
+        """
+        Aggregates all workout history into a single analytics payload.
+
+        Iterates over every session in chronological order and computes:
+
+        - **overall** — lifetime totals: session count, total reps, and all-time max weight.
+        - **charts** — parallel lists of labels, total volumes, and max weights per session,
+          intended for direct use in a frontend chart (e.g. Chart.js or Recharts).
+        - **history** — full session detail list (newest first), each entry produced
+          by :py:meth:`_get_workout_details`.
+
+        Returns
+        -------
+        str
+            Pretty-printed JSON with keys ``overall``, ``charts``, and ``history``.
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
             rows = cursor.execute("SELECT * FROM workouts ORDER BY id ASC").fetchall()
@@ -86,7 +133,18 @@ class WorkoutRepository:
             return json.dumps(result, ensure_ascii=False, indent=4)
 
     def get_last_session_json(self) -> str:
-        """Returns JSON for the most recent workout session"""
+        """
+        Returns the most recently saved workout session as JSON.
+
+        Queries the ``workouts`` table for the row with the highest ``id``
+        and delegates full detail assembly to :py:meth:`_get_workout_details`.
+
+        Returns
+        -------
+        str
+            Pretty-printed JSON with session fields (see :py:meth:`_get_workout_details`).
+            If no sessions exist, returns ``{"error": "No sessions found"}``.
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
             row = cursor.execute("SELECT * FROM workouts ORDER BY id DESC LIMIT 1").fetchone()
@@ -98,7 +156,25 @@ class WorkoutRepository:
             return json.dumps(result, ensure_ascii=False, indent=4)
 
     def get_sessions_by_date_json(self, date_str: str) -> str:
-        """Returns JSON list of sessions for a specific date (e.g. '15.05.2024')"""
+        """
+        Returns all workout sessions recorded on a given date.
+
+        Performs a ``LIKE`` prefix match on the ``date`` column, so the caller
+        only needs to provide the date portion (e.g. ``'15.05.2024'``) without
+        worrying about the time component.  Multiple sessions on the same day
+        are returned newest-first.
+
+        Parameters
+        ----------
+        date_str : str
+            Date string in ``'DD.MM.YYYY'`` format.
+
+        Returns
+        -------
+        str
+            Pretty-printed JSON array of session detail dicts.
+            Returns an empty array (``[]``) if no sessions match.
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
             rows = cursor.execute(
@@ -110,7 +186,35 @@ class WorkoutRepository:
             return json.dumps(results, ensure_ascii=False, indent=4)
 
     def _get_workout_details(self, cursor, row) -> dict:
-        """Internal helper to aggregate all data for a single workout row"""
+        """
+        Assembles a complete detail dict for a single workout database row.
+
+        Fetches the associated sets and errors from their respective tables,
+        then computes derived metrics. Intended as a private helper called
+        from all public query methods to keep result formatting consistent.
+
+        Parameters
+        ----------
+        cursor : sqlite3.Cursor
+            An active cursor on the current connection, used to run sub-queries.
+        row : sqlite3.Row
+            A row from the ``workouts`` table; must expose ``id``, ``date``,
+            ``rating``, and ``weight_feedback`` by column name.
+
+        Returns
+        -------
+        dict
+            A dict with the following keys:
+
+            - ``id`` — workout primary key.
+            - ``date`` — session datetime string.
+            - ``rating`` — session quality score (0–10).
+            - ``feedback`` — weight adjustment recommendation.
+            - ``sets`` — list of ``{'reps': int, 'weight': float}`` dicts.
+            - ``errors`` — list of form-error description strings.
+            - ``summary`` — nested dict with ``volume`` (total kg·reps),
+              ``max_weight`` (heaviest set weight), and ``reps_count`` (total reps).
+        """
         w_id = row["id"]
 
         sets_rows = cursor.execute(
@@ -140,6 +244,24 @@ class WorkoutRepository:
         }
 
     def get_weight_recommendation(self) -> str:
+        """
+        Derives a weight adjustment recommendation based on the last session.
+
+        Looks up the most recent workout and applies the following rules
+        (checked in order):
+
+        - **``'increase'``** — rating ≥ 8 *and* total reps ≥ 27; the athlete
+          handled the load well enough to progress.
+        - **``'decrease'``** — rating ≤ 5 *or* total reps < 20; the session
+          was too difficult or incomplete.
+        - **``'normal'``** — all other cases; keep the current weight.
+
+        Returns
+        -------
+        str
+            One of ``'increase'``, ``'decrease'``, or ``'normal'``.
+            Returns ``'normal'`` if the database contains no sessions yet.
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
 
