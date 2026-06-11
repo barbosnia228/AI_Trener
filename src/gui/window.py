@@ -319,6 +319,8 @@ class TrainingControlWindow(QMainWindow):
 
         # ── config ──────────────────────────────────────────────────────────
         root.addWidget(_label("Workout Configuration", size=10, muted=True))
+        self._recommendation_lbl = _label("", size=9)
+        root.addWidget(self._recommendation_lbl)
 
         grid = QHBoxLayout()
         grid.setSpacing(12)
@@ -387,6 +389,7 @@ class TrainingControlWindow(QMainWindow):
 
         # ── Tab 2: Statistics ────────────────────────────────────────────────
         self._repo = WorkoutRepository()
+        self._update_recommendation()
 
         stats_tab = QWidget()
         sr = QVBoxLayout(stats_tab)
@@ -618,6 +621,7 @@ class TrainingControlWindow(QMainWindow):
         }
         try:
             self._repo.save_session(json.dumps(session, ensure_ascii=False))
+            self._update_recommendation()
         except Exception as exc:
             print(f"[TrainingControlWindow] DB save error: {exc}", file=sys.stderr)
 
@@ -635,6 +639,32 @@ class TrainingControlWindow(QMainWindow):
         self._elapsed += 1
         m, s = divmod(self._elapsed, 60)
         self._lbl_elapsed.setText(f"⏱  {m:02d}:{s:02d}")
+
+
+    def _update_recommendation(self):
+        recommendation = self._repo.get_weight_recommendation()
+
+        if recommendation == "increase":
+            self._recommendation_lbl.setText(
+                "↑ Recommended: increase weight by 2.5 kg"
+            )
+            self._recommendation_lbl.setStyleSheet(
+                f"color: {PALETTE['success']};"
+            )
+        elif recommendation == "decrease":
+            self._recommendation_lbl.setText(
+                "↓ Recommended: decrease weight by 2.5 kg"
+            )
+            self._recommendation_lbl.setStyleSheet(
+                f"color: {PALETTE['danger']};"
+            )
+        else:
+            self._recommendation_lbl.setText(
+                "→ Recommended: keep current weight"
+            )
+            self._recommendation_lbl.setStyleSheet(
+                f"color: {PALETTE['muted']};"
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

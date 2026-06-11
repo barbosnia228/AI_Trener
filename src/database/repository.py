@@ -138,3 +138,34 @@ class WorkoutRepository:
                 "reps_count": reps_count
             }
         }
+
+    def get_weight_recommendation(self) -> str:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+
+            row = cursor.execute("""
+                SELECT id, rating
+                FROM workouts
+                ORDER BY id DESC
+                LIMIT 1
+            """).fetchone()
+
+            if not row:
+                return "normal"
+
+            workout_id = row["id"]
+            rating = row["rating"]
+
+            reps = cursor.execute("""
+                SELECT SUM(reps) as total
+                FROM sets
+                WHERE workout_id = ?
+            """, (workout_id,)).fetchone()["total"] or 0
+
+            if rating >= 8 and reps >= 27:
+                return "increase"
+
+            if rating <= 5 or reps < 20:
+                return "decrease"
+
+            return "normal"
